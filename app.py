@@ -4,7 +4,6 @@ from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import date
 import calendar
-import hashlib
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
 
@@ -17,17 +16,15 @@ def conectar_gsheets():
     client = gspread.authorize(creds)
     return client.open_by_key(SHEET_ID)
 
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
 def verificar_login(username, password):
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("usuarios")
         datos = ws.get_all_records()
-        password_hash = hash_password(password)
+        
+        # Comparación directa SIN hash
         for user in datos:
-            if user["username"] == username and user["password_hash"] == password_hash:
+            if user["username"] == username and user["password_hash"] == password:
                 return True
         return False
     except Exception as e:
