@@ -4,6 +4,7 @@ from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import date
 import calendar
+import re
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
 
@@ -16,6 +17,27 @@ def conectar_gsheets():
     client = gspread.authorize(creds)
     return client.open_by_key(SHEET_ID)
 
+def limpiar_numero(valor):
+    """Convierte un valor a número, eliminando puntos, espacios y caracteres especiales"""
+    if valor is None:
+        return 0
+    if isinstance(valor, (int, float)):
+        return int(valor)
+    # Convertir a string y limpiar
+    valor_str = str(valor).strip()
+    # Eliminar puntos (separadores de miles)
+    valor_str = valor_str.replace(".", "")
+    # Eliminar espacios
+    valor_str = valor_str.replace(" ", "")
+    # Eliminar signos de $
+    valor_str = valor_str.replace("$", "")
+    # Eliminar comas
+    valor_str = valor_str.replace(",", "")
+    try:
+        return int(float(valor_str))
+    except:
+        return 0
+
 def verificar_login(username, password):
     try:
         sheet = conectar_gsheets()
@@ -23,7 +45,7 @@ def verificar_login(username, password):
         datos = ws.get_all_records()
         
         for user in datos:
-            if str(user["username"]) == str(username) and str(user["password_hash"]) == str(password):
+            if str(user["username"]).strip() == str(username).strip() and str(user["password_hash"]).strip() == str(password).strip():
                 return True
         return False
     except Exception as e:
@@ -45,18 +67,18 @@ def obtener_dependencias():
     
     dependencias = []
     for d in datos:
-        if d["año"] == hoy.year and d["mes"] == hoy.month:
-            # Convertir a número si es necesario
-            monto = d["monto_mensual"]
-            if isinstance(monto, str):
-                monto = int(monto.replace(",", "").replace("$", ""))
-            
+        # Verificar año y mes
+        año_dato = limpiar_numero(d.get("año", 0))
+        mes_dato = limpiar_numero(d.get("mes", 0))
+        
+        if año_dato == hoy.year and mes_dato == hoy.month:
+            monto = limpiar_numero(d.get("monto_mensual", 0))
             dependencias.append({
-                "dependencia_id": int(d["dependencia_id"]),
-                "nombre": d["nombre"],
+                "dependencia_id": limpiar_numero(d.get("dependencia_id", 0)),
+                "nombre": str(d.get("nombre", "")),
                 "monto_mensual": monto,
-                "año": d["año"],
-                "mes": d["mes"]
+                "año": año_dato,
+                "mes": mes_dato
             })
     return dependencias
 
@@ -66,13 +88,10 @@ def obtener_stock_vales():
     datos = ws.get_all_records()
     stock = {}
     for row in datos:
-        denom = row["denominacion"]
-        if isinstance(denom, str):
-            denom = int(denom.replace(",", "").replace("$", ""))
-        cantidad = row["cantidad"]
-        if isinstance(cantidad, str):
-            cantidad = int(cantidad)
-        stock[denom] = cantidad
+        denom = limpiar_numero(row.get("denominacion", 0))
+        cantidad = limpiar_numero(row.get("cantidad", 0))
+        if denom > 0:
+            stock[denom] = cantidad
     return stock
 
 if "logged_in" not in st.session_state:
@@ -110,6 +129,7 @@ else:
         
         if not dependencias:
             st.warning("No hay dependencias para el mes actual")
+            st.info("Verifica que en la hoja 'dependencias' los valores de 'año' y 'mes' coincidan con la fecha actual")
             st.stop()
         
         miercoles = contar_miercoles(hoy.year, hoy.month)
@@ -118,25 +138,30 @@ else:
         st.subheader("📊 Dependencias")
         tabla = []
         for dep in dependencias:
-            monto_semanal = dep["monto_mensual"] / miercoles
-            tabla.append({
-                "ID": dep["dependencia_id"],
-                "Dependencia": dep["nombre"],
-                "Monto Mensual": f"${dep['monto_mensual']:,.0f}",
-                "Monto Semanal": f"${monto_semanal:,.0f}"
-            })
-        st.dataframe(pd.DataFrame(tabla), use_container_width=True)
+            if dep["monto_mensual"] > 0:
+                monto_semanal = dep["monto_mensual"] / miercoles
+                tabla.append({
+                    "ID": dep["dependencia_id"],
+                    "Dependencia": dep["nombre"],
+                    "Monto Mensual": f"${dep['monto_mensual']:,.0f}",
+                    "Monto Semanal": f"${monto_semanal:,.0f}"
+                })
+        
+        if tabla:
+            st.dataframe(pd.DataFrame(tabla), use_container_width=True)
+        else:
+            st.warning("No hay datos válidos en la hoja 'dependencias'")
         
         st.subheader("💰 Stock de Vales")
         stock = obtener_stock_vales()
         if stock:
             stock_df = pd.DataFrame([
                 {"Denominación": f"${d:,.0f}", "Cantidad": c}
-                for d, c in stock.items()
+                for d, c in sorted(stock.items())
             ])
             st.dataframe(stock_df, use_container_width=True)
         else:
-            st.warning("No hay datos de stock")
+            st.warning("No hay datos de stock en la hoja 'vales_disponibles'")
             
     except Exception as e:
         st.error(f"Error al cargar datos: {e}")
