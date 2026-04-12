@@ -15,6 +15,11 @@ st.set_page_config(
 )
 
 # ============================================
+# CONEXIÓN CON EL MANIFEST.JSON (PWA)
+# ============================================
+st.markdown('<link rel="manifest" href="manifest.json">', unsafe_allow_html=True)
+
+# ============================================
 # CONFIGURACIÓN PWA PARA ANDROID (SOLO HTML/META)
 # ============================================
 st.markdown("""
