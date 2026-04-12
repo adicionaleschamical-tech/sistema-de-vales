@@ -33,14 +33,20 @@ def limpiar_numero(valor):
 def verificar_login(username, password):
     try:
         sheet = conectar_gsheets()
-        ws = sheet.worksheet("usuarios")
+        # Verificar que la hoja 'usuarios' existe
+        try:
+            ws = sheet.worksheet("usuarios")
+        except:
+            st.error("❌ No se encuentra la hoja 'usuarios' en Google Sheets")
+            return False
+        
         datos = ws.get_all_records()
         for user in datos:
             if str(user["username"]).strip() == str(username).strip() and str(user["password_hash"]).strip() == str(password).strip():
                 return True
         return False
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error de login: {e}")
         return False
 
 def contar_miercoles(anio, mes):
@@ -51,52 +57,68 @@ def contar_miercoles(anio, mes):
     return count
 
 def obtener_dependencias():
-    sheet = conectar_gsheets()
-    ws = sheet.worksheet("dependencias")
-    datos = ws.get_all_records()
-    hoy = date.today()
-    
-    dependencias = []
-    for d in datos:
-        año_dato = limpiar_numero(d.get("año", 0))
-        mes_dato = limpiar_numero(d.get("mes", 0))
+    try:
+        sheet = conectar_gsheets()
+        # Verificar que la hoja 'dependencias' existe
+        try:
+            ws = sheet.worksheet("dependencias")
+        except:
+            st.error("❌ No se encuentra la hoja 'dependencias' en Google Sheets")
+            st.info("Asegúrate que el nombre de la hoja sea exactamente 'dependencias' (minúsculas, sin espacios)")
+            return []
         
-        if año_dato == hoy.year and mes_dato == hoy.month:
-            monto = limpiar_numero(d.get("monto_mensual", 0))
-            dependencias.append({
-                "id": limpiar_numero(d.get("dependencia_id", 0)),
-                "nombre": str(d.get("nombre", "")),
-                "monto_mensual": monto
-            })
-    return dependencias
+        datos = ws.get_all_records()
+        hoy = date.today()
+        
+        dependencias = []
+        for d in datos:
+            año_dato = limpiar_numero(d.get("año", 0))
+            mes_dato = limpiar_numero(d.get("mes", 0))
+            
+            if año_dato == hoy.year and mes_dato == hoy.month:
+                monto = limpiar_numero(d.get("monto_mensual", 0))
+                dependencias.append({
+                    "id": limpiar_numero(d.get("dependencia_id", 0)),
+                    "nombre": str(d.get("nombre", "")),
+                    "monto_mensual": monto
+                })
+        return dependencias
+    except Exception as e:
+        st.error(f"Error al leer dependencias: {e}")
+        return []
 
 def obtener_stock_actual():
-    sheet = conectar_gsheets()
-    ws = sheet.worksheet("vales_disponibles")
-    datos = ws.get_all_records()
-    
-    stock = {den: 0 for den in DENOMINACIONES}
-    for row in datos:
-        denom = limpiar_numero(row.get("denominacion", 0))
-        cantidad = limpiar_numero(row.get("cantidad", 0))
-        if denom in stock:
-            stock[denom] = cantidad
-    return stock
+    try:
+        sheet = conectar_gsheets()
+        try:
+            ws = sheet.worksheet("vales_disponibles")
+        except:
+            st.error("❌ No se encuentra la hoja 'vales_disponibles' en Google Sheets")
+            return {den: 0 for den in DENOMINACIONES}
+        
+        datos = ws.get_all_records()
+        
+        stock = {den: 0 for den in DENOMINACIONES}
+        for row in datos:
+            denom = limpiar_numero(row.get("denominacion", 0))
+            cantidad = limpiar_numero(row.get("cantidad", 0))
+            if denom in stock:
+                stock[denom] = cantidad
+        return stock
+    except Exception as e:
+        st.error(f"Error al leer stock: {e}")
+        return {den: 0 for den in DENOMINACIONES}
 
 def actualizar_stock(stock_nuevo):
-    """Actualiza la hoja 'vales_disponibles' con el nuevo stock"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
         
-        # Para cada denominación, buscar y actualizar
         for denom, cantidad in stock_nuevo.items():
             # Buscar la celda que contiene el número de la denominación
             cell = ws.find(str(denom))
             if cell:
-                # Actualizar la columna B (cantidad) en la misma fila
                 ws.update_cell(cell.row, 2, cantidad)
-        
         return True
     except Exception as e:
         st.error(f"Error al actualizar stock: {e}")
@@ -111,7 +133,6 @@ def agregar_vales(vales_ingreso):
     return stock_actual
 
 def distribuir_vales(dependencias, stock_actual, miercoles):
-    """Distribuye vales para pagar el TOTAL EXACTO de la cuota semanal con vales surtidos"""
     reparto = []
     for dep in dependencias:
         cuota_semanal = dep["monto_mensual"] / miercoles
@@ -128,7 +149,6 @@ def distribuir_vales(dependencias, stock_actual, miercoles):
         combinacion = [0, 0, 0, 0, 0, 0, 0]
         resto = monto
         
-        # Primero usar vales grandes
         for j, valor_vale in enumerate(DENOMINACIONES):
             if resto <= 0:
                 break
@@ -144,7 +164,6 @@ def distribuir_vales(dependencias, stock_actual, miercoles):
                     combinacion[j] = usar
                     resto -= usar * valor_vale
         
-        # Segunda pasada: completar
         for j, valor_vale in enumerate(DENOMINACIONES):
             if resto <= 0:
                 break
@@ -170,39 +189,42 @@ def distribuir_vales(dependencias, stock_actual, miercoles):
     return reparto, stock
 
 def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados=None):
-    sheet = conectar_gsheets()
-    
     try:
-        historial_ws = sheet.worksheet("entregas_semanales")
-    except:
-        historial_ws = sheet.add_worksheet(title="entregas_semanales", rows="1000", cols="20")
-    
-    if es_ingreso and vales_ingresados:
-        nueva_fila = [
-            str(fecha),
-            vales_ingresados.get(20000, 0),
-            vales_ingresados.get(10000, 0),
-            vales_ingresados.get(3000, 0),
-            vales_ingresados.get(2000, 0),
-            vales_ingresados.get(1000, 0),
-            vales_ingresados.get(500, 0),
-            vales_ingresados.get(100, 0),
-            sum(vales_ingresados.values()),
-            f"INGRESO - {tipo}"
-        ]
-    else:
-        totales = [0, 0, 0, 0, 0, 0, 0]
-        for ofi in reparto:
-            for j, cant in enumerate(ofi["vales"]):
-                totales[j] += cant
-        nueva_fila = [
-            str(fecha),
-            totales[0], totales[1], totales[2], totales[3], totales[4], totales[5], totales[6],
-            sum(totales),
-            f"DISTRIBUCION - {tipo}"
-        ]
-    
-    historial_ws.append_row(nueva_fila)
+        sheet = conectar_gsheets()
+        
+        try:
+            historial_ws = sheet.worksheet("entregas_semanales")
+        except:
+            historial_ws = sheet.add_worksheet(title="entregas_semanales", rows="1000", cols="20")
+        
+        if es_ingreso and vales_ingresados:
+            nueva_fila = [
+                str(fecha),
+                vales_ingresados.get(20000, 0),
+                vales_ingresados.get(10000, 0),
+                vales_ingresados.get(3000, 0),
+                vales_ingresados.get(2000, 0),
+                vales_ingresados.get(1000, 0),
+                vales_ingresados.get(500, 0),
+                vales_ingresados.get(100, 0),
+                sum(vales_ingresados.values()),
+                f"INGRESO - {tipo}"
+            ]
+        else:
+            totales = [0, 0, 0, 0, 0, 0, 0]
+            for ofi in reparto:
+                for j, cant in enumerate(ofi["vales"]):
+                    totales[j] += cant
+            nueva_fila = [
+                str(fecha),
+                totales[0], totales[1], totales[2], totales[3], totales[4], totales[5], totales[6],
+                sum(totales),
+                f"DISTRIBUCION - {tipo}"
+            ]
+        
+        historial_ws.append_row(nueva_fila)
+    except Exception as e:
+        st.error(f"Error al registrar historial: {e}")
 
 # ============================================
 # INTERFAZ
@@ -234,6 +256,18 @@ else:
     if st.sidebar.button("🚪 Cerrar sesión"):
         st.session_state.logged_in = False
         st.rerun()
+    
+    # Mostrar información de depuración
+    with st.expander("🔧 Verificar conexión con Google Sheets"):
+        try:
+            sheet = conectar_gsheets()
+            st.success("✅ Conexión exitosa con Google Sheets")
+            st.write(f"**Nombre del Sheet:** {sheet.title}")
+            st.write("**Hojas disponibles:**")
+            for ws in sheet.worksheets():
+                st.write(f"  - {ws.title}")
+        except Exception as e:
+            st.error(f"❌ Error de conexión: {e}")
     
     tab1, tab2, tab3, tab4 = st.tabs(["📦 Ingresar Vales", "🎯 Distribución Semanal", "💰 Stock Actual", "📜 Historial"])
     
@@ -275,6 +309,7 @@ else:
         
         if not dependencias:
             st.warning("No hay dependencias para el mes actual")
+            st.info("Verifica que en la hoja 'dependencias' existan datos con el año y mes actual")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
@@ -326,37 +361,16 @@ else:
                         })
                     st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
                     
-                    # Mostrar resumen de lo que se va a descontar
-                    st.subheader("📦 Resumen de la distribución")
-                    resumen_stock = []
-                    for d in DENOMINACIONES:
-                        descontar = stock[d] - stock_nuevo[d]
-                        if descontar > 0:
-                            resumen_stock.append({
-                                "Denominación": f"${d:,.0f}",
-                                "Stock actual": stock[d],
-                                "A entregar": descontar,
-                                "Stock final": stock_nuevo[d]
-                            })
-                    if resumen_stock:
-                        st.dataframe(pd.DataFrame(resumen_stock), use_container_width=True)
-                    
-                    # Guardar en session_state para usarlo después
                     st.session_state.reparto = reparto
                     st.session_state.stock_nuevo = stock_nuevo
                     st.session_state.fecha_dist = fecha_dist
             
-            # Botón separado para guardar (solo aparece después de calcular)
             if 'reparto' in st.session_state:
                 if st.button("✅ CONFIRMAR Y GUARDAR DISTRIBUCIÓN", type="primary"):
                     with st.spinner("Actualizando stock en Google Sheets..."):
-                        # Actualizar stock
                         if actualizar_stock(st.session_state.stock_nuevo):
-                            # Registrar en historial
                             registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
                             st.success("🎉 Distribución guardada exitosamente")
-                            st.info("El stock ha sido actualizado en Google Sheets")
-                            # Limpiar session_state
                             del st.session_state.reparto
                             del st.session_state.stock_nuevo
                             del st.session_state.fecha_dist
@@ -368,7 +382,6 @@ else:
     with tab3:
         st.header("💰 Stock Actual de Vales")
         
-        # Botón para refrescar
         if st.button("🔄 Refrescar stock"):
             st.rerun()
         
@@ -391,9 +404,8 @@ else:
             historial_datos = historial_ws.get_all_records()
             if historial_datos:
                 df = pd.DataFrame(historial_datos)
-                # Mostrar últimos 20 movimientos en orden inverso
                 st.dataframe(df.tail(20), use_container_width=True)
             else:
                 st.info("No hay movimientos registrados aún")
-        except Exception as e:
+        except:
             st.info("No hay historial disponible")
