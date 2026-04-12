@@ -84,13 +84,23 @@ def obtener_stock_actual():
     return stock
 
 def actualizar_stock(stock_nuevo):
-    sheet = conectar_gsheets()
-    ws = sheet.worksheet("vales_disponibles")
-    
-    for denom, cantidad in stock_nuevo.items():
-        celda = ws.find(str(denom))
-        if celda:
-            ws.update_cell(celda.row, 2, cantidad)
+    """Actualiza la hoja 'vales_disponibles' con el nuevo stock"""
+    try:
+        sheet = conectar_gsheets()
+        ws = sheet.worksheet("vales_disponibles")
+        
+        # Para cada denominación, buscar y actualizar
+        for denom, cantidad in stock_nuevo.items():
+            # Buscar la celda que contiene el número de la denominación
+            cell = ws.find(str(denom))
+            if cell:
+                # Actualizar la columna B (cantidad) en la misma fila
+                ws.update_cell(cell.row, 2, cantidad)
+        
+        return True
+    except Exception as e:
+        st.error(f"Error al actualizar stock: {e}")
+        return False
 
 def agregar_vales(vales_ingreso):
     stock_actual = obtener_stock_actual()
@@ -227,6 +237,7 @@ else:
     
     tab1, tab2, tab3, tab4 = st.tabs(["📦 Ingresar Vales", "🎯 Distribución Semanal", "💰 Stock Actual", "📜 Historial"])
     
+    # ========== TAB 1: INGRESAR VALES ==========
     with tab1:
         st.header("📥 Ingreso de nuevos vales")
         with st.form("ingreso_vales"):
@@ -255,13 +266,15 @@ else:
                 else:
                     st.warning("Ingresa al menos un vale")
     
+    # ========== TAB 2: DISTRIBUCIÓN SEMANAL ==========
     with tab2:
         st.header("🎯 Distribución Semanal")
+        
         hoy = date.today()
         dependencias = obtener_dependencias()
         
         if not dependencias:
-            st.warning("No hay dependencias")
+            st.warning("No hay dependencias para el mes actual")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
@@ -271,6 +284,7 @@ else:
             for dep in dependencias:
                 monto_semanal = dep["monto_mensual"] / miercoles
                 tabla_deps.append({
+                    "ID": dep["id"],
                     "Dependencia": dep["nombre"],
                     "Monto Mensual": f"${dep['monto_mensual']:,.0f}",
                     "Monto Semanal": f"${monto_semanal:,.0f}"
@@ -279,15 +293,18 @@ else:
             
             stock = obtener_stock_actual()
             st.subheader("💰 Stock Actual")
-            st.dataframe(pd.DataFrame([
-                {"Denominación": f"${d:,.0f}", "Cantidad": stock[d]} for d in DENOMINACIONES
-            ]), use_container_width=True)
+            stock_df = pd.DataFrame([
+                {"Denominación": f"${d:,.0f}", "Cantidad": stock[d]}
+                for d in DENOMINACIONES
+            ])
+            st.dataframe(stock_df, use_container_width=True)
             
-            fecha_dist = st.date_input("Fecha (miércoles)", value=hoy)
+            st.markdown("---")
+            fecha_dist = st.date_input("Fecha de distribución (miércoles)", value=hoy)
             
             if st.button("📦 Calcular Distribución", type="primary"):
                 if fecha_dist.weekday() != 2:
-                    st.warning("Debe ser miércoles")
+                    st.warning("⚠️ La distribución debe hacerse en un miércoles")
                 else:
                     reparto, stock_nuevo = distribuir_vales(dependencias, stock, miercoles)
                     st.success("✅ Distribución calculada")
@@ -309,29 +326,74 @@ else:
                         })
                     st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
                     
-                    if st.button("✅ Guardar Distribución"):
-                        actualizar_stock(stock_nuevo)
-                        registrar_historial(fecha_dist, reparto, "AUTO")
-                        st.success("Guardado")
-                        st.rerun()
+                    # Mostrar resumen de lo que se va a descontar
+                    st.subheader("📦 Resumen de la distribución")
+                    resumen_stock = []
+                    for d in DENOMINACIONES:
+                        descontar = stock[d] - stock_nuevo[d]
+                        if descontar > 0:
+                            resumen_stock.append({
+                                "Denominación": f"${d:,.0f}",
+                                "Stock actual": stock[d],
+                                "A entregar": descontar,
+                                "Stock final": stock_nuevo[d]
+                            })
+                    if resumen_stock:
+                        st.dataframe(pd.DataFrame(resumen_stock), use_container_width=True)
+                    
+                    # Guardar en session_state para usarlo después
+                    st.session_state.reparto = reparto
+                    st.session_state.stock_nuevo = stock_nuevo
+                    st.session_state.fecha_dist = fecha_dist
+            
+            # Botón separado para guardar (solo aparece después de calcular)
+            if 'reparto' in st.session_state:
+                if st.button("✅ CONFIRMAR Y GUARDAR DISTRIBUCIÓN", type="primary"):
+                    with st.spinner("Actualizando stock en Google Sheets..."):
+                        # Actualizar stock
+                        if actualizar_stock(st.session_state.stock_nuevo):
+                            # Registrar en historial
+                            registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
+                            st.success("🎉 Distribución guardada exitosamente")
+                            st.info("El stock ha sido actualizado en Google Sheets")
+                            # Limpiar session_state
+                            del st.session_state.reparto
+                            del st.session_state.stock_nuevo
+                            del st.session_state.fecha_dist
+                            st.rerun()
+                        else:
+                            st.error("Error al actualizar el stock")
     
+    # ========== TAB 3: STOCK ACTUAL ==========
     with tab3:
-        st.header("💰 Stock Actual")
+        st.header("💰 Stock Actual de Vales")
+        
+        # Botón para refrescar
+        if st.button("🔄 Refrescar stock"):
+            st.rerun()
+        
         stock = obtener_stock_actual()
         total_dinero = sum(den * stock[den] for den in DENOMINACIONES)
-        st.dataframe(pd.DataFrame([
+        
+        stock_display = pd.DataFrame([
             {"Denominación": f"${d:,.0f}", "Cantidad": stock[d], "Total": f"${d * stock[d]:,.0f}"}
             for d in DENOMINACIONES
-        ]), use_container_width=True)
+        ])
+        st.dataframe(stock_display, use_container_width=True)
         st.metric("💵 Total en caja", f"${total_dinero:,.0f}")
     
+    # ========== TAB 4: HISTORIAL ==========
     with tab4:
-        st.header("📜 Historial")
+        st.header("📜 Historial de Movimientos")
         try:
             sheet = conectar_gsheets()
             historial_ws = sheet.worksheet("entregas_semanales")
             historial_datos = historial_ws.get_all_records()
             if historial_datos:
-                st.dataframe(pd.DataFrame(historial_datos).tail(20), use_container_width=True)
-        except:
-            st.info("No hay historial")
+                df = pd.DataFrame(historial_datos)
+                # Mostrar últimos 20 movimientos en orden inverso
+                st.dataframe(df.tail(20), use_container_width=True)
+            else:
+                st.info("No hay movimientos registrados aún")
+        except Exception as e:
+            st.info("No hay historial disponible")
