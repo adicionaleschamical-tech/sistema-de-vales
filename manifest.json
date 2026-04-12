@@ -1,0 +1,10 @@
+{
+    "name": "Sistema de Vales",
+    "short_name": "Sistema Vales",
+    "description": "Gestión de vales y distribución semanal",
+    "start_url": ".",
+    "display": "standalone",
+    "theme_color": "#1f77b4",
+    "background_color": "#ffffff",
+    "icons": []
+}
