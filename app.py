@@ -15,29 +15,17 @@ st.set_page_config(
 )
 
 # ============================================
-# CONEXIÓN CON EL MANIFEST.JSON (PWA)
+# CONFIGURACIÓN PWA SIMPLIFICADA
 # ============================================
-st.markdown('<link rel="manifest" href="manifest.json">', unsafe_allow_html=True)
-
-# ============================================
-# CONFIGURACIÓN PWA PARA ANDROID (SOLO HTML/META)
-# ============================================
+# Esta es la configuración mínima necesaria para PWA
 st.markdown("""
+    <link rel="manifest" href="manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="apple-mobile-web-app-title" content="Sistema Vales">
-    <meta name="application-name" content="Sistema de Vales">
+    <meta name="application-name" content="Sistema Vales">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#1f77b4">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
-    
-    <style>
-        @media (display-mode: standalone) {
-            .stApp {
-                background-color: #f0f2f6;
-            }
-        }
-    </style>
+    <title>Sistema de Vales</title>
 """, unsafe_allow_html=True)
 
 # ============================================
