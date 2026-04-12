@@ -2,7 +2,7 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
-from datetime import date, datetime
+from datetime import date
 import calendar
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
@@ -101,7 +101,7 @@ def agregar_vales(vales_ingreso):
     return stock_actual
 
 def distribuir_vales(dependencias, stock_actual, miercoles):
-    """Distribuye vales de manera SURTIDA (diferentes denominaciones)"""
+    """Distribuye vales para pagar el TOTAL EXACTO de la cuota semanal con vales surtidos"""
     reparto = []
     for dep in dependencias:
         cuota_semanal = dep["monto_mensual"] / miercoles
@@ -113,46 +113,49 @@ def distribuir_vales(dependencias, stock_actual, miercoles):
         })
     
     stock = stock_actual.copy()
-    num_dependencias = len(reparto)
     
-    # Primera pasada: distribuir equitativamente cada denominación
-    for j, valor_vale in enumerate(DENOMINACIONES):
-        if stock[valor_vale] == 0:
-            continue
+    def calcular_combinacion_exacta(monto, stock_disponible):
+        combinacion = [0, 0, 0, 0, 0, 0, 0]
+        resto = monto
         
-        disponibles = stock[valor_vale]
-        vales_por_dependencia = disponibles // num_dependencias
-        resto = disponibles % num_dependencias
-        
-        for i, ofi in enumerate(reparto):
-            cuota_restante = ofi["cuota_objetivo"] - ofi["total"]
-            max_posible = int(cuota_restante // valor_vale)
-            
-            a_asignar = vales_por_dependencia
-            if i < resto:
-                a_asignar += 1
-            a_asignar = min(a_asignar, max_posible)
-            
-            if a_asignar > 0:
-                ofi["vales"][j] = a_asignar
-                ofi["total"] += a_asignar * valor_vale
-                stock[valor_vale] -= a_asignar
-    
-    # Segunda pasada: repartir los sobrantes a los que más falta les hace
-    for j, valor_vale in enumerate(DENOMINACIONES):
-        if stock[valor_vale] == 0:
-            continue
-        
-        reparto_ordenado = sorted(enumerate(reparto), key=lambda x: x[1]["cuota_objetivo"] - x[1]["total"], reverse=True)
-        
-        for idx, ofi in reparto_ordenado:
-            if stock[valor_vale] == 0:
+        # Primero usar vales grandes
+        for j, valor_vale in enumerate(DENOMINACIONES):
+            if resto <= 0:
                 break
-            cuota_restante = ofi["cuota_objetivo"] - ofi["total"]
-            if cuota_restante >= valor_vale:
-                ofi["vales"][j] += 1
-                ofi["total"] += valor_vale
-                stock[valor_vale] -= 1
+            if stock_disponible[valor_vale] > 0:
+                max_posibles = min(stock_disponible[valor_vale], resto // valor_vale)
+                if max_posibles > 0:
+                    usar = max_posibles
+                    if j < len(DENOMINACIONES) - 1:
+                        siguiente_valor = DENOMINACIONES[j + 1]
+                        resto_despues = resto - (usar * valor_vale)
+                        if resto_despues > 0 and resto_despues % siguiente_valor != 0:
+                            usar = max(0, usar - 1)
+                    combinacion[j] = usar
+                    resto -= usar * valor_vale
+        
+        # Segunda pasada: completar
+        for j, valor_vale in enumerate(DENOMINACIONES):
+            if resto <= 0:
+                break
+            if stock_disponible[valor_vale] > combinacion[j]:
+                disponibles = stock_disponible[valor_vale] - combinacion[j]
+                if resto >= valor_vale:
+                    necesarios = min(disponibles, resto // valor_vale)
+                    combinacion[j] += necesarios
+                    resto -= necesarios * valor_vale
+        
+        return combinacion, resto
+    
+    for ofi in reparto:
+        monto_necesario = ofi["cuota_objetivo"]
+        combinacion, resto = calcular_combinacion_exacta(monto_necesario, stock)
+        
+        ofi["vales"] = combinacion
+        ofi["total"] = monto_necesario - resto
+        
+        for j, valor_vale in enumerate(DENOMINACIONES):
+            stock[valor_vale] -= combinacion[j]
     
     return reparto, stock
 
@@ -224,10 +227,8 @@ else:
     
     tab1, tab2, tab3, tab4 = st.tabs(["📦 Ingresar Vales", "🎯 Distribución Semanal", "💰 Stock Actual", "📜 Historial"])
     
-    # TAB 1: INGRESAR VALES
     with tab1:
         st.header("📥 Ingreso de nuevos vales")
-        
         with st.form("ingreso_vales"):
             col1, col2 = st.columns(2)
             with col1:
@@ -241,7 +242,6 @@ else:
                 v100 = st.number_input("Vales de $100", min_value=0, value=0, step=1)
             
             fecha_ingreso = st.date_input("Fecha de ingreso", value=date.today())
-            
             total_ingreso = v20000*20000 + v10000*10000 + v3000*3000 + v2000*2000 + v1000*1000 + v500*500 + v100*100
             st.metric("💰 Total a ingresar", f"${total_ingreso:,.0f}")
             
@@ -250,20 +250,18 @@ else:
                     vales_ingreso = {20000: v20000, 10000: v10000, 3000: v3000, 2000: v2000, 1000: v1000, 500: v500, 100: v100}
                     agregar_vales(vales_ingreso)
                     registrar_historial(fecha_ingreso, None, "MANUAL", es_ingreso=True, vales_ingresados=vales_ingreso)
-                    st.success(f"✅ Se ingresaron ${total_ingreso:,.0f} en vales")
+                    st.success(f"✅ Se ingresaron ${total_ingreso:,.0f}")
                     st.rerun()
                 else:
                     st.warning("Ingresa al menos un vale")
     
-    # TAB 2: DISTRIBUCIÓN
     with tab2:
-        st.header("🎯 Distribución Semanal de Vales")
-        
+        st.header("🎯 Distribución Semanal")
         hoy = date.today()
         dependencias = obtener_dependencias()
         
         if not dependencias:
-            st.warning("No hay dependencias para el mes actual")
+            st.warning("No hay dependencias")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
@@ -273,7 +271,6 @@ else:
             for dep in dependencias:
                 monto_semanal = dep["monto_mensual"] / miercoles
                 tabla_deps.append({
-                    "ID": dep["id"],
                     "Dependencia": dep["nombre"],
                     "Monto Mensual": f"${dep['monto_mensual']:,.0f}",
                     "Monto Semanal": f"${monto_semanal:,.0f}"
@@ -282,18 +279,15 @@ else:
             
             stock = obtener_stock_actual()
             st.subheader("💰 Stock Actual")
-            stock_df = pd.DataFrame([
-                {"Denominación": f"${d:,.0f}", "Cantidad": stock[d]}
-                for d in DENOMINACIONES
-            ])
-            st.dataframe(stock_df, use_container_width=True)
+            st.dataframe(pd.DataFrame([
+                {"Denominación": f"${d:,.0f}", "Cantidad": stock[d]} for d in DENOMINACIONES
+            ]), use_container_width=True)
             
-            st.markdown("---")
-            fecha_dist = st.date_input("Fecha de distribución (miércoles)", value=hoy, key="fecha_dist")
+            fecha_dist = st.date_input("Fecha (miércoles)", value=hoy)
             
             if st.button("📦 Calcular Distribución", type="primary"):
                 if fecha_dist.weekday() != 2:
-                    st.warning("⚠️ La distribución debe hacerse en un miércoles")
+                    st.warning("Debe ser miércoles")
                 else:
                     reparto, stock_nuevo = distribuir_vales(dependencias, stock, miercoles)
                     st.success("✅ Distribución calculada")
@@ -315,35 +309,29 @@ else:
                         })
                     st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
                     
-                    if st.button("✅ Confirmar y Guardar Distribución"):
+                    if st.button("✅ Guardar Distribución"):
                         actualizar_stock(stock_nuevo)
                         registrar_historial(fecha_dist, reparto, "AUTO")
-                        st.success("🎉 Distribución guardada")
+                        st.success("Guardado")
                         st.rerun()
     
-    # TAB 3: STOCK
     with tab3:
-        st.header("💰 Stock Actual de Vales")
+        st.header("💰 Stock Actual")
         stock = obtener_stock_actual()
         total_dinero = sum(den * stock[den] for den in DENOMINACIONES)
-        
-        stock_display = pd.DataFrame([
+        st.dataframe(pd.DataFrame([
             {"Denominación": f"${d:,.0f}", "Cantidad": stock[d], "Total": f"${d * stock[d]:,.0f}"}
             for d in DENOMINACIONES
-        ])
-        st.dataframe(stock_display, use_container_width=True)
+        ]), use_container_width=True)
         st.metric("💵 Total en caja", f"${total_dinero:,.0f}")
     
-    # TAB 4: HISTORIAL
     with tab4:
-        st.header("📜 Historial de Movimientos")
+        st.header("📜 Historial")
         try:
             sheet = conectar_gsheets()
             historial_ws = sheet.worksheet("entregas_semanales")
             historial_datos = historial_ws.get_all_records()
             if historial_datos:
                 st.dataframe(pd.DataFrame(historial_datos).tail(20), use_container_width=True)
-            else:
-                st.info("No hay movimientos registrados")
         except:
-            st.info("No hay historial disponible")
+            st.info("No hay historial")
