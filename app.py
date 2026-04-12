@@ -33,11 +33,10 @@ def limpiar_numero(valor):
 def verificar_login(username, password):
     try:
         sheet = conectar_gsheets()
-        # Verificar que la hoja 'usuarios' existe
         try:
             ws = sheet.worksheet("usuarios")
         except:
-            st.error("❌ No se encuentra la hoja 'usuarios' en Google Sheets")
+            st.error("❌ No se encuentra la hoja 'usuarios'")
             return False
         
         datos = ws.get_all_records()
@@ -59,12 +58,10 @@ def contar_miercoles(anio, mes):
 def obtener_dependencias():
     try:
         sheet = conectar_gsheets()
-        # Verificar que la hoja 'dependencias' existe
         try:
             ws = sheet.worksheet("dependencias")
         except:
-            st.error("❌ No se encuentra la hoja 'dependencias' en Google Sheets")
-            st.info("Asegúrate que el nombre de la hoja sea exactamente 'dependencias' (minúsculas, sin espacios)")
+            st.error("❌ No se encuentra la hoja 'dependencias'")
             return []
         
         datos = ws.get_all_records()
@@ -93,7 +90,7 @@ def obtener_stock_actual():
         try:
             ws = sheet.worksheet("vales_disponibles")
         except:
-            st.error("❌ No se encuentra la hoja 'vales_disponibles' en Google Sheets")
+            st.error("❌ No se encuentra la hoja 'vales_disponibles'")
             return {den: 0 for den in DENOMINACIONES}
         
         datos = ws.get_all_records()
@@ -115,7 +112,6 @@ def actualizar_stock(stock_nuevo):
         ws = sheet.worksheet("vales_disponibles")
         
         for denom, cantidad in stock_nuevo.items():
-            # Buscar la celda que contiene el número de la denominación
             cell = ws.find(str(denom))
             if cell:
                 ws.update_cell(cell.row, 2, cantidad)
@@ -198,33 +194,50 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
             historial_ws = sheet.add_worksheet(title="entregas_semanales", rows="1000", cols="20")
         
         if es_ingreso and vales_ingresados:
+            # Orden: [fecha, dependencia_id, $100, $500, $1000, $2000, $3000, $10000, $20000, total_entregado]
             nueva_fila = [
-                str(fecha),
-                vales_ingresados.get(20000, 0),
-                vales_ingresados.get(10000, 0),
-                vales_ingresados.get(3000, 0),
-                vales_ingresados.get(2000, 0),
-                vales_ingresados.get(1000, 0),
-                vales_ingresados.get(500, 0),
-                vales_ingresados.get(100, 0),
-                sum(vales_ingresados.values()),
-                f"INGRESO - {tipo}"
+                str(fecha),           # fecha_entrega
+                0,                    # dependencia_id (0 para ingresos)
+                vales_ingresados.get(100, 0),    # vale_100
+                vales_ingresados.get(500, 0),    # vale_500
+                vales_ingresados.get(1000, 0),   # vale_1000
+                vales_ingresados.get(2000, 0),   # vale_2000
+                vales_ingresados.get(3000, 0),   # vale_3000
+                vales_ingresados.get(10000, 0),  # vale_10000
+                vales_ingresados.get(20000, 0),  # vale_20000
+                f"INGRESO - {tipo}"   # total_entregado
             ]
         else:
+            # Calcular totales en el orden del historial: [100, 500, 1000, 2000, 3000, 10000, 20000]
             totales = [0, 0, 0, 0, 0, 0, 0]
             for ofi in reparto:
-                for j, cant in enumerate(ofi["vales"]):
-                    totales[j] += cant
+                # ofi["vales"] está en orden: [20000, 10000, 3000, 2000, 1000, 500, 100]
+                totales[0] += ofi["vales"][6]  # 100
+                totales[1] += ofi["vales"][5]  # 500
+                totales[2] += ofi["vales"][4]  # 1000
+                totales[3] += ofi["vales"][3]  # 2000
+                totales[4] += ofi["vales"][2]  # 3000
+                totales[5] += ofi["vales"][1]  # 10000
+                totales[6] += ofi["vales"][0]  # 20000
+            
             nueva_fila = [
-                str(fecha),
-                totales[0], totales[1], totales[2], totales[3], totales[4], totales[5], totales[6],
-                sum(totales),
-                f"DISTRIBUCION - {tipo}"
+                str(fecha),           # fecha_entrega
+                0,                    # dependencia_id (0 para distribución múltiple)
+                totales[0],           # vale_100
+                totales[1],           # vale_500
+                totales[2],           # vale_1000
+                totales[3],           # vale_2000
+                totales[4],           # vale_3000
+                totales[5],           # vale_10000
+                totales[6],           # vale_20000
+                f"DISTRIBUCION - {tipo}"  # total_entregado
             ]
         
         historial_ws.append_row(nueva_fila)
+        return True
     except Exception as e:
         st.error(f"Error al registrar historial: {e}")
+        return False
 
 # ============================================
 # INTERFAZ
@@ -257,17 +270,17 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
-    # Mostrar información de depuración
+    # Expandir para verificar conexión
     with st.expander("🔧 Verificar conexión con Google Sheets"):
         try:
             sheet = conectar_gsheets()
-            st.success("✅ Conexión exitosa con Google Sheets")
-            st.write(f"**Nombre del Sheet:** {sheet.title}")
+            st.success("✅ Conexión exitosa")
+            st.write(f"**Sheet:** {sheet.title}")
             st.write("**Hojas disponibles:**")
             for ws in sheet.worksheets():
                 st.write(f"  - {ws.title}")
         except Exception as e:
-            st.error(f"❌ Error de conexión: {e}")
+            st.error(f"❌ Error: {e}")
     
     tab1, tab2, tab3, tab4 = st.tabs(["📦 Ingresar Vales", "🎯 Distribución Semanal", "💰 Stock Actual", "📜 Historial"])
     
@@ -292,7 +305,15 @@ else:
             
             if st.form_submit_button("✅ Confirmar Ingreso", type="primary"):
                 if total_ingreso > 0:
-                    vales_ingreso = {20000: v20000, 10000: v10000, 3000: v3000, 2000: v2000, 1000: v1000, 500: v500, 100: v100}
+                    vales_ingreso = {
+                        20000: v20000,
+                        10000: v10000,
+                        3000: v3000,
+                        2000: v2000,
+                        1000: v1000,
+                        500: v500,
+                        100: v100
+                    }
                     agregar_vales(vales_ingreso)
                     registrar_historial(fecha_ingreso, None, "MANUAL", es_ingreso=True, vales_ingresados=vales_ingreso)
                     st.success(f"✅ Se ingresaron ${total_ingreso:,.0f}")
@@ -367,7 +388,7 @@ else:
             
             if 'reparto' in st.session_state:
                 if st.button("✅ CONFIRMAR Y GUARDAR DISTRIBUCIÓN", type="primary"):
-                    with st.spinner("Actualizando stock en Google Sheets..."):
+                    with st.spinner("Actualizando stock..."):
                         if actualizar_stock(st.session_state.stock_nuevo):
                             registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
                             st.success("🎉 Distribución guardada exitosamente")
@@ -407,5 +428,5 @@ else:
                 st.dataframe(df.tail(20), use_container_width=True)
             else:
                 st.info("No hay movimientos registrados aún")
-        except:
+        except Exception as e:
             st.info("No hay historial disponible")
