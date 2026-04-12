@@ -4,13 +4,11 @@ from google.oauth2.service_account import Credentials
 import pandas as pd
 from datetime import date, datetime
 import calendar
-import re
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
 
 SHEET_ID = "1nwfjyFdEG06T85HCmouFd279ImyimfcXFZebs07N1gQ"
 
-# Denominaciones fijas
 DENOMINACIONES = [20000, 10000, 3000, 2000, 1000, 500, 100]
 
 def conectar_gsheets():
@@ -21,20 +19,12 @@ def conectar_gsheets():
     return client.open_by_key(SHEET_ID)
 
 def limpiar_numero(valor):
-    """Convierte números con puntos y espacios correctamente"""
     if valor is None:
         return 0
     if isinstance(valor, (int, float)):
         return int(valor)
     valor_str = str(valor).strip()
-    # Eliminar puntos (separadores de miles)
-    valor_str = valor_str.replace(".", "")
-    # Eliminar espacios
-    valor_str = valor_str.replace(" ", "")
-    # Eliminar signos de $
-    valor_str = valor_str.replace("$", "")
-    # Eliminar comas
-    valor_str = valor_str.replace(",", "")
+    valor_str = valor_str.replace(".", "").replace(" ", "").replace("$", "").replace(",", "")
     try:
         return int(float(valor_str))
     except:
@@ -103,17 +93,15 @@ def actualizar_stock(stock_nuevo):
             ws.update_cell(celda.row, 2, cantidad)
 
 def agregar_vales(vales_ingreso):
-    """Agrega vales al stock (ingreso de nuevos vales)"""
     stock_actual = obtener_stock_actual()
-    
     for denom, cantidad in vales_ingreso.items():
         if cantidad > 0:
             stock_actual[denom] += cantidad
-    
     actualizar_stock(stock_actual)
     return stock_actual
 
 def distribuir_vales(dependencias, stock_actual, miercoles):
+    """Distribuye vales de manera SURTIDA (diferentes denominaciones)"""
     reparto = []
     for dep in dependencias:
         cuota_semanal = dep["monto_mensual"] / miercoles
@@ -125,16 +113,46 @@ def distribuir_vales(dependencias, stock_actual, miercoles):
         })
     
     stock = stock_actual.copy()
+    num_dependencias = len(reparto)
     
-    for ofi in reparto:
-        for j, valor_vale in enumerate(DENOMINACIONES):
-            while stock[valor_vale] > 0:
-                if ofi["total"] + valor_vale <= ofi["cuota_objetivo"]:
-                    ofi["vales"][j] += 1
-                    stock[valor_vale] -= 1
-                    ofi["total"] += valor_vale
-                else:
-                    break
+    # Primera pasada: distribuir equitativamente cada denominación
+    for j, valor_vale in enumerate(DENOMINACIONES):
+        if stock[valor_vale] == 0:
+            continue
+        
+        disponibles = stock[valor_vale]
+        vales_por_dependencia = disponibles // num_dependencias
+        resto = disponibles % num_dependencias
+        
+        for i, ofi in enumerate(reparto):
+            cuota_restante = ofi["cuota_objetivo"] - ofi["total"]
+            max_posible = int(cuota_restante // valor_vale)
+            
+            a_asignar = vales_por_dependencia
+            if i < resto:
+                a_asignar += 1
+            a_asignar = min(a_asignar, max_posible)
+            
+            if a_asignar > 0:
+                ofi["vales"][j] = a_asignar
+                ofi["total"] += a_asignar * valor_vale
+                stock[valor_vale] -= a_asignar
+    
+    # Segunda pasada: repartir los sobrantes a los que más falta les hace
+    for j, valor_vale in enumerate(DENOMINACIONES):
+        if stock[valor_vale] == 0:
+            continue
+        
+        reparto_ordenado = sorted(enumerate(reparto), key=lambda x: x[1]["cuota_objetivo"] - x[1]["total"], reverse=True)
+        
+        for idx, ofi in reparto_ordenado:
+            if stock[valor_vale] == 0:
+                break
+            cuota_restante = ofi["cuota_objetivo"] - ofi["total"]
+            if cuota_restante >= valor_vale:
+                ofi["vales"][j] += 1
+                ofi["total"] += valor_vale
+                stock[valor_vale] -= 1
     
     return reparto, stock
 
@@ -147,7 +165,6 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
         historial_ws = sheet.add_worksheet(title="entregas_semanales", rows="1000", cols="20")
     
     if es_ingreso and vales_ingresados:
-        # Es un ingreso de vales
         nueva_fila = [
             str(fecha),
             vales_ingresados.get(20000, 0),
@@ -161,12 +178,10 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
             f"INGRESO - {tipo}"
         ]
     else:
-        # Es una distribución (entrega)
         totales = [0, 0, 0, 0, 0, 0, 0]
         for ofi in reparto:
             for j, cant in enumerate(ofi["vales"]):
                 totales[j] += cant
-        
         nueva_fila = [
             str(fecha),
             totales[0], totales[1], totales[2], totales[3], totales[4], totales[5], totales[6],
@@ -177,7 +192,7 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
     historial_ws.append_row(nueva_fila)
 
 # ============================================
-# INTERFAZ DE STREAMLIT
+# INTERFAZ
 # ============================================
 
 if "logged_in" not in st.session_state:
@@ -207,19 +222,13 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
-    # ============================================
-    # TABS (PESTAÑAS)
-    # ============================================
     tab1, tab2, tab3, tab4 = st.tabs(["📦 Ingresar Vales", "🎯 Distribución Semanal", "💰 Stock Actual", "📜 Historial"])
     
-    # ========== TAB 1: INGRESAR VALES ==========
+    # TAB 1: INGRESAR VALES
     with tab1:
         st.header("📥 Ingreso de nuevos vales")
-        st.info("Registra los vales que te entregaron. Se sumarán automáticamente al stock.")
         
         with st.form("ingreso_vales"):
-            st.subheader("Cantidades a ingresar:")
-            
             col1, col2 = st.columns(2)
             with col1:
                 v20000 = st.number_input("Vales de $20.000", min_value=0, value=0, step=1)
@@ -233,30 +242,20 @@ else:
             
             fecha_ingreso = st.date_input("Fecha de ingreso", value=date.today())
             
-            calcular_total = st.form_submit_button("Calcular Total")
-            
             total_ingreso = v20000*20000 + v10000*10000 + v3000*3000 + v2000*2000 + v1000*1000 + v500*500 + v100*100
             st.metric("💰 Total a ingresar", f"${total_ingreso:,.0f}")
             
             if st.form_submit_button("✅ Confirmar Ingreso", type="primary"):
                 if total_ingreso > 0:
-                    vales_ingreso = {
-                        20000: v20000,
-                        10000: v10000,
-                        3000: v3000,
-                        2000: v2000,
-                        1000: v1000,
-                        500: v500,
-                        100: v100
-                    }
-                    nuevo_stock = agregar_vales(vales_ingreso)
+                    vales_ingreso = {20000: v20000, 10000: v10000, 3000: v3000, 2000: v2000, 1000: v1000, 500: v500, 100: v100}
+                    agregar_vales(vales_ingreso)
                     registrar_historial(fecha_ingreso, None, "MANUAL", es_ingreso=True, vales_ingresados=vales_ingreso)
                     st.success(f"✅ Se ingresaron ${total_ingreso:,.0f} en vales")
                     st.rerun()
                 else:
                     st.warning("Ingresa al menos un vale")
     
-    # ========== TAB 2: DISTRIBUCIÓN SEMANAL ==========
+    # TAB 2: DISTRIBUCIÓN
     with tab2:
         st.header("🎯 Distribución Semanal de Vales")
         
@@ -269,7 +268,6 @@ else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
             
-            # Mostrar dependencias
             st.subheader("📊 Dependencias")
             tabla_deps = []
             for dep in dependencias:
@@ -282,7 +280,6 @@ else:
                 })
             st.dataframe(pd.DataFrame(tabla_deps), use_container_width=True)
             
-            # Stock actual
             stock = obtener_stock_actual()
             st.subheader("💰 Stock Actual")
             stock_df = pd.DataFrame([
@@ -291,7 +288,6 @@ else:
             ])
             st.dataframe(stock_df, use_container_width=True)
             
-            # Distribución
             st.markdown("---")
             fecha_dist = st.date_input("Fecha de distribución (miércoles)", value=hoy, key="fecha_dist")
             
@@ -300,68 +296,45 @@ else:
                     st.warning("⚠️ La distribución debe hacerse en un miércoles")
                 else:
                     reparto, stock_nuevo = distribuir_vales(dependencias, stock, miercoles)
-                    
                     st.success("✅ Distribución calculada")
                     
-                    # Mostrar resultados
                     datos_tabla = []
                     for ofi in reparto:
                         datos_tabla.append({
                             "Dependencia": ofi["nombre"],
-                            "Cuota Objetivo": f"${ofi['cuota_objetivo']:,.0f}",
-                            "Total Entregado": f"${ofi['total']:,.0f}",
+                            "Cuota": f"${ofi['cuota_objetivo']:,.0f}",
+                            "Entregado": f"${ofi['total']:,.0f}",
                             "Diferencia": f"${ofi['cuota_objetivo'] - ofi['total']:,.0f}",
-                            "20k": ofi["vales"][0],
-                            "10k": ofi["vales"][1],
-                            "3k": ofi["vales"][2],
-                            "2k": ofi["vales"][3],
-                            "1k": ofi["vales"][4],
-                            "500": ofi["vales"][5],
-                            "100": ofi["vales"][6],
+                            "$20k": ofi["vales"][0],
+                            "$10k": ofi["vales"][1],
+                            "$3k": ofi["vales"][2],
+                            "$2k": ofi["vales"][3],
+                            "$1k": ofi["vales"][4],
+                            "$500": ofi["vales"][5],
+                            "$100": ofi["vales"][6],
                         })
                     st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
-                    
-                    # Resumen de stock
-                    st.subheader("📦 Resumen de stock")
-                    stock_resumen = []
-                    for d in DENOMINACIONES:
-                        stock_resumen.append({
-                            "Denominación": f"${d:,.0f}",
-                            "Antes": stock[d],
-                            "A entregar": stock[d] - stock_nuevo[d],
-                            "Después": stock_nuevo[d]
-                        })
-                    st.dataframe(pd.DataFrame(stock_resumen), use_container_width=True)
                     
                     if st.button("✅ Confirmar y Guardar Distribución"):
                         actualizar_stock(stock_nuevo)
                         registrar_historial(fecha_dist, reparto, "AUTO")
-                        st.success("🎉 Distribución guardada exitosamente")
+                        st.success("🎉 Distribución guardada")
                         st.rerun()
     
-    # ========== TAB 3: STOCK ACTUAL ==========
+    # TAB 3: STOCK
     with tab3:
         st.header("💰 Stock Actual de Vales")
         stock = obtener_stock_actual()
-        
-        # Calcular total en dinero
         total_dinero = sum(den * stock[den] for den in DENOMINACIONES)
         
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            stock_display = pd.DataFrame([
-                {"Denominación": f"${d:,.0f}", "Cantidad": stock[d], "Total": f"${d * stock[d]:,.0f}"}
-                for d in DENOMINACIONES
-            ])
-            st.dataframe(stock_display, use_container_width=True)
-        
-        with col2:
-            st.metric("💵 Total en caja", f"${total_dinero:,.0f}")
-        
-        if st.button("🔄 Actualizar stock"):
-            st.rerun()
+        stock_display = pd.DataFrame([
+            {"Denominación": f"${d:,.0f}", "Cantidad": stock[d], "Total": f"${d * stock[d]:,.0f}"}
+            for d in DENOMINACIONES
+        ])
+        st.dataframe(stock_display, use_container_width=True)
+        st.metric("💵 Total en caja", f"${total_dinero:,.0f}")
     
-    # ========== TAB 4: HISTORIAL ==========
+    # TAB 4: HISTORIAL
     with tab4:
         st.header("📜 Historial de Movimientos")
         try:
@@ -369,20 +342,8 @@ else:
             historial_ws = sheet.worksheet("entregas_semanales")
             historial_datos = historial_ws.get_all_records()
             if historial_datos:
-                df = pd.DataFrame(historial_datos)
-                # Renombrar columnas para mejor visualización
-                df = df.rename(columns={
-                    'fecha_entrega': 'Fecha',
-                    'vale_20000': '$20.000',
-                    'vale_10000': '$10.000',
-                    'vale_3000': '$3.000',
-                    'vale_2000': '$2.000',
-                    'vale_1000': '$1.000',
-                    'vale_500': '$500',
-                    'vale_100': '$100'
-                })
-                st.dataframe(df.tail(20), use_container_width=True)
+                st.dataframe(pd.DataFrame(historial_datos).tail(20), use_container_width=True)
             else:
-                st.info("No hay movimientos registrados aún")
-        except Exception as e:
+                st.info("No hay movimientos registrados")
+        except:
             st.info("No hay historial disponible")
