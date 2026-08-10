@@ -5,20 +5,13 @@ import pandas as pd
 from datetime import date
 import calendar
 import time
-import re  # <--- NUEVA IMPORTACIÓN
+import re
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
 
 SHEET_ID = "1nwfjyFdEG06T85HCmouFd279ImyimfcXFZebs07N1gQ"
 
 DENOMINACIONES = [20000, 10000, 3000, 2000, 1000, 500, 100]
-
-# Variables de caché para reducir llamadas a la API
-_cache_stock = None
-_cache_stock_timestamp = 0
-_cache_dependencias = None
-_cache_dependencias_timestamp = 0
-CACHE_DURATION = 30  # segundos
 
 def conectar_gsheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -27,10 +20,6 @@ def conectar_gsheets():
     client = gspread.authorize(creds)
     return client.open_by_key(SHEET_ID)
 
-# ============================================
-# FUNCIÓN LIMPIAR NÚMERO MEJORADA
-# ============================================
-
 def limpiar_numero(valor):
     """Convierte cualquier formato a número entero"""
     if valor is None:
@@ -38,33 +27,19 @@ def limpiar_numero(valor):
     if isinstance(valor, (int, float)):
         return int(valor)
     
-    # Convertir a string
     valor_str = str(valor).strip()
-    
-    # Si está vacío, retornar 0
     if not valor_str:
         return 0
     
-    # Eliminar signo de pesos
-    valor_str = valor_str.replace("$", "")
+    # Eliminar caracteres no numéricos
+    valor_str = valor_str.replace("$", "").replace(".", "").replace(",", "").replace(" ", "")
     
-    # Eliminar puntos (separadores de miles)
-    valor_str = valor_str.replace(".", "")
-    
-    # Eliminar comas
-    valor_str = valor_str.replace(",", "")
-    
-    # Eliminar espacios
-    valor_str = valor_str.replace(" ", "")
-    
-    # Si está vacío después de limpiar, retornar 0
     if not valor_str:
         return 0
     
     try:
         return int(float(valor_str))
     except:
-        # Si falla, intentar extraer solo números
         numeros = re.findall(r'\d+', valor_str)
         if numeros:
             return int(''.join(numeros))
@@ -95,26 +70,22 @@ def contar_miercoles(anio, mes):
             count += 1
     return count
 
-def obtener_dependencias(force_refresh=False):
-    global _cache_dependencias, _cache_dependencias_timestamp
-    
-    ahora = time.time()
-    if not force_refresh and _cache_dependencias is not None and (ahora - _cache_dependencias_timestamp) < CACHE_DURATION:
-        return _cache_dependencias
-    
+# ============================================
+# FUNCIONES SIN CACHÉ - LECTURA DIRECTA
+# ============================================
+
+def obtener_dependencias():
+    """Lee dependencias DIRECTAMENTE de Google Sheets (sin caché)"""
     try:
         sheet = conectar_gsheets()
-        try:
-            ws = sheet.worksheet("dependencias")
-        except:
-            st.error("❌ No se encuentra la hoja 'dependencias'")
-            return []
-        
+        ws = sheet.worksheet("dependencias")
         datos = ws.get_all_records()
         hoy = date.today()
         
         # MOSTRAR DEPURACIÓN
-        st.write("### 🔍 Depuración - Datos leídos de 'dependencias'")
+        st.write("### 🔍 Depuración - Hoja 'dependencias'")
+        st.write(f"**Año buscado:** {hoy.year}, **Mes buscado:** {hoy.month}")
+        st.write("**Datos leídos:**")
         st.dataframe(pd.DataFrame(datos))
         
         dependencias = []
@@ -122,64 +93,50 @@ def obtener_dependencias(force_refresh=False):
             año_dato = limpiar_numero(d.get("año", 0))
             mes_dato = limpiar_numero(d.get("mes", 0))
             monto = limpiar_numero(d.get("monto_mensual", 0))
+            nombre = str(d.get("nombre", "")).strip()
             
-            st.write(f"Procesando: año={año_dato}, mes={mes_dato}, monto={monto}, buscando año={hoy.year}, mes={hoy.month}")
+            st.write(f"→ {nombre}: año={año_dato}, mes={mes_dato}, monto={monto}")
             
             if año_dato == hoy.year and mes_dato == hoy.month:
                 dependencias.append({
                     "id": limpiar_numero(d.get("dependencia_id", 0)),
-                    "nombre": str(d.get("nombre", "")),
+                    "nombre": nombre,
                     "monto_mensual": monto
                 })
         
-        st.write(f"✅ Dependencias encontradas: {len(dependencias)}")
-        
-        _cache_dependencias = dependencias
-        _cache_dependencias_timestamp = ahora
+        st.write(f"**✅ Dependencias encontradas:** {len(dependencias)}")
         return dependencias
     except Exception as e:
         st.error(f"Error al leer dependencias: {e}")
         return []
 
-def obtener_stock_actual(force_refresh=False):
-    global _cache_stock, _cache_stock_timestamp
-    
-    ahora = time.time()
-    if not force_refresh and _cache_stock is not None and (ahora - _cache_stock_timestamp) < CACHE_DURATION:
-        return _cache_stock.copy()
-    
+def obtener_stock_actual():
+    """Lee stock DIRECTAMENTE de Google Sheets (sin caché)"""
     try:
         sheet = conectar_gsheets()
-        try:
-            ws = sheet.worksheet("vales_disponibles")
-        except:
-            st.error("❌ No se encuentra la hoja 'vales_disponibles'")
-            return {den: 0 for den in DENOMINACIONES}
-        
+        ws = sheet.worksheet("vales_disponibles")
         datos = ws.get_all_records()
         
-        st.write("### 🔍 Depuración - Datos leídos de 'vales_disponibles'")
+        # MOSTRAR DEPURACIÓN
+        st.write("### 🔍 Depuración - Hoja 'vales_disponibles'")
+        st.write("**Datos leídos:**")
         st.dataframe(pd.DataFrame(datos))
         
         stock = {den: 0 for den in DENOMINACIONES}
         for row in datos:
             denom = limpiar_numero(row.get("denominacion", 0))
             cantidad = limpiar_numero(row.get("cantidad", 0))
+            st.write(f"→ Denominación: {denom}, Cantidad: {cantidad}")
             if denom in stock:
                 stock[denom] = cantidad
         
-        st.write(f"✅ Stock: {stock}")
-        
-        _cache_stock = stock.copy()
-        _cache_stock_timestamp = ahora
+        st.write(f"**✅ Stock final:** {stock}")
         return stock
     except Exception as e:
         st.error(f"Error al leer stock: {e}")
         return {den: 0 for den in DENOMINACIONES}
 
 def actualizar_stock(stock_nuevo):
-    global _cache_stock, _cache_stock_timestamp
-    
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
@@ -189,16 +146,13 @@ def actualizar_stock(stock_nuevo):
             if cell:
                 ws.update_cell(cell.row, 2, cantidad)
                 time.sleep(0.1)
-        
-        _cache_stock = stock_nuevo.copy()
-        _cache_stock_timestamp = time.time()
         return True
     except Exception as e:
         st.error(f"Error al actualizar stock: {e}")
         return False
 
 def agregar_vales(vales_ingreso):
-    stock_actual = obtener_stock_actual(force_refresh=True)
+    stock_actual = obtener_stock_actual()
     for denom, cantidad in vales_ingreso.items():
         if cantidad > 0:
             stock_actual[denom] += cantidad
@@ -207,7 +161,7 @@ def agregar_vales(vales_ingreso):
 
 def cambiar_vales(desde_denom, desde_cant, hasta_denom, hasta_cant):
     try:
-        stock_actual = obtener_stock_actual(force_refresh=True)
+        stock_actual = obtener_stock_actual()
         
         if stock_actual[desde_denom] < desde_cant:
             return False, f"No hay suficientes vales de ${desde_denom:,.0f}. Disponibles: {stock_actual[desde_denom]}"
@@ -423,6 +377,9 @@ else:
             sheet = conectar_gsheets()
             st.success("✅ Conexión exitosa")
             st.write(f"**Sheet:** {sheet.title}")
+            st.write("**Hojas disponibles:**")
+            for ws in sheet.worksheets():
+                st.write(f"  - {ws.title}")
         except Exception as e:
             st.error(f"❌ Error: {e}")
     
@@ -493,11 +450,23 @@ else:
         st.header("🤖 Distribución Automática Semanal")
         
         hoy = date.today()
+        
+        st.write("---")
+        st.write("### 📡 Leyendo datos de Google Sheets...")
+        
         dependencias = obtener_dependencias()
+        stock = obtener_stock_actual()
+        
+        st.write("---")
+        st.write("### 📊 Resultados de la lectura")
+        st.write(f"**Dependencias encontradas:** {len(dependencias)}")
+        st.write(f"**Stock:** {stock}")
+        st.write("---")
         
         if not dependencias:
             st.warning("⚠️ No hay dependencias para el mes actual")
             st.info(f"Buscando: año={hoy.year}, mes={hoy.month}")
+            st.info("Verificá que en la hoja 'dependencias' los valores de 'año' y 'mes' coincidan con la fecha actual.")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
@@ -514,7 +483,6 @@ else:
                 })
             st.dataframe(pd.DataFrame(tabla_deps), use_container_width=True)
             
-            stock = obtener_stock_actual()
             st.subheader("💰 Stock Actual")
             stock_df = pd.DataFrame([
                 {"Denominación": f"${d:,.0f}", "Cantidad": stock[d]}
@@ -580,7 +548,6 @@ else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
             
-            # Mostrar cuotas semanales
             st.subheader("📊 Cuotas Semanales por Dependencia")
             cuotas = {}
             for dep in dependencias:
@@ -588,7 +555,6 @@ else:
                 cuotas[dep["id"]] = cuota
                 st.metric(f"{dep['nombre']}", f"${cuota:,.0f}")
             
-            # Stock actual
             stock = obtener_stock_actual()
             st.subheader("💰 Stock Disponible para Distribuir")
             stock_df = pd.DataFrame([
@@ -679,11 +645,8 @@ else:
     with tab5:
         st.header("💰 Stock Actual de Vales")
         
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            if st.button("🔄 Refrescar stock"):
-                obtener_stock_actual(force_refresh=True)
-                st.rerun()
+        if st.button("🔄 Refrescar stock"):
+            st.rerun()
         
         stock = obtener_stock_actual()
         total_dinero = sum(den * stock[den] for den in DENOMINACIONES)
