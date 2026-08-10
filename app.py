@@ -21,28 +21,31 @@ def conectar_gsheets():
     return client.open_by_key(SHEET_ID)
 
 def limpiar_numero(valor):
-    """Convierte cualquier formato a número entero"""
+    """Convierte CUALQUIER formato a número entero"""
     if valor is None:
         return 0
     if isinstance(valor, (int, float)):
         return int(valor)
     
+    # Convertir a string y limpiar
     valor_str = str(valor).strip()
     if not valor_str:
         return 0
     
-    # Eliminar caracteres no numéricos
-    valor_str = valor_str.replace("$", "").replace(".", "").replace(",", "").replace(" ", "")
+    # Si es un número con formato (ej: "1,000" o "$1.000" o "100")
+    # Eliminar caracteres no numéricos excepto el punto decimal
+    valor_str = re.sub(r'[^\d.]', '', valor_str)
     
     if not valor_str:
         return 0
     
     try:
-        return int(float(valor_str))
+        # Si tiene punto decimal, convertirlo
+        if '.' in valor_str:
+            return int(float(valor_str))
+        else:
+            return int(valor_str)
     except:
-        numeros = re.findall(r'\d+', valor_str)
-        if numeros:
-            return int(''.join(numeros))
         return 0
 
 def verificar_login(username, password):
@@ -70,19 +73,15 @@ def contar_miercoles(anio, mes):
             count += 1
     return count
 
-# ============================================
-# FUNCIONES SIN CACHÉ - LECTURA DIRECTA
-# ============================================
-
 def obtener_dependencias():
-    """Lee dependencias DIRECTAMENTE de Google Sheets (sin caché)"""
+    """Lee dependencias DIRECTAMENTE de Google Sheets"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("dependencias")
         datos = ws.get_all_records()
         hoy = date.today()
         
-        # MOSTRAR DEPURACIÓN
+        # Mostrar depuración
         st.write("### 🔍 Depuración - Hoja 'dependencias'")
         st.write(f"**Año buscado:** {hoy.year}, **Mes buscado:** {hoy.month}")
         st.write("**Datos leídos:**")
@@ -111,24 +110,37 @@ def obtener_dependencias():
         return []
 
 def obtener_stock_actual():
-    """Lee stock DIRECTAMENTE de Google Sheets (sin caché)"""
+    """Lee stock DIRECTAMENTE de Google Sheets con conversión correcta"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
         datos = ws.get_all_records()
         
-        # MOSTRAR DEPURACIÓN
+        # Mostrar depuración
         st.write("### 🔍 Depuración - Hoja 'vales_disponibles'")
-        st.write("**Datos leídos:**")
+        st.write("**Datos leídos (raw):**")
         st.dataframe(pd.DataFrame(datos))
         
+        # Inicializar stock con todas las denominaciones en 0
         stock = {den: 0 for den in DENOMINACIONES}
-        for row in datos:
-            denom = limpiar_numero(row.get("denominacion", 0))
-            cantidad = limpiar_numero(row.get("cantidad", 0))
-            st.write(f"→ Denominación: {denom}, Cantidad: {cantidad}")
+        
+        # Procesar cada fila
+        for idx, row in enumerate(datos):
+            # Obtener denominación y cantidad
+            denom_raw = row.get("denominacion", 0)
+            cant_raw = row.get("cantidad", 0)
+            
+            # Limpiar y convertir
+            denom = limpiar_numero(denom_raw)
+            cantidad = limpiar_numero(cant_raw)
+            
+            st.write(f"→ Fila {idx+1}: denom_raw='{denom_raw}' → {denom}, cant_raw='{cant_raw}' → {cantidad}")
+            
+            # Solo agregar si la denominación está en nuestra lista
             if denom in stock:
                 stock[denom] = cantidad
+            else:
+                st.write(f"  ⚠️ Denominación {denom} no reconocida (no está en {DENOMINACIONES})")
         
         st.write(f"**✅ Stock final:** {stock}")
         return stock
@@ -451,16 +463,15 @@ else:
         
         hoy = date.today()
         
-        st.write("---")
-        st.write("### 📡 Leyendo datos de Google Sheets...")
-        
         dependencias = obtener_dependencias()
         stock = obtener_stock_actual()
         
         st.write("---")
         st.write("### 📊 Resultados de la lectura")
         st.write(f"**Dependencias encontradas:** {len(dependencias)}")
-        st.write(f"**Stock:** {stock}")
+        st.write("**Stock:**")
+        for denom in DENOMINACIONES:
+            st.write(f"  - ${denom:,}: {stock.get(denom, 0)} vales")
         st.write("---")
         
         if not dependencias:
@@ -485,7 +496,7 @@ else:
             
             st.subheader("💰 Stock Actual")
             stock_df = pd.DataFrame([
-                {"Denominación": f"${d:,.0f}", "Cantidad": stock[d]}
+                {"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0)}
                 for d in DENOMINACIONES
             ])
             st.dataframe(stock_df, use_container_width=True)
@@ -558,7 +569,7 @@ else:
             stock = obtener_stock_actual()
             st.subheader("💰 Stock Disponible para Distribuir")
             stock_df = pd.DataFrame([
-                {"Denominación": f"${d:,.0f}", "Cantidad disponible": stock[d]}
+                {"Denominación": f"${d:,.0f}", "Cantidad disponible": stock.get(d, 0)}
                 for d in DENOMINACIONES
             ])
             st.dataframe(stock_df, use_container_width=True)
@@ -616,8 +627,8 @@ else:
                 
                 for ofi in reparto_manual:
                     for j, denom in enumerate(DENOMINACIONES):
-                        if ofi["vales"][j] > stock_temp[denom]:
-                            st.error(f"❌ No hay suficientes vales de ${denom:,.0f} para {ofi['nombre']}. Disponibles: {stock_temp[denom]}")
+                        if ofi["vales"][j] > stock_temp.get(denom, 0):
+                            st.error(f"❌ No hay suficientes vales de ${denom:,.0f} para {ofi['nombre']}. Disponibles: {stock_temp.get(denom, 0)}")
                             error_stock = True
                         else:
                             stock_temp[denom] -= ofi["vales"][j]
@@ -649,10 +660,10 @@ else:
             st.rerun()
         
         stock = obtener_stock_actual()
-        total_dinero = sum(den * stock[den] for den in DENOMINACIONES)
+        total_dinero = sum(den * stock.get(den, 0) for den in DENOMINACIONES)
         
         stock_display = pd.DataFrame([
-            {"Denominación": f"${d:,.0f}", "Cantidad": stock[d], "Total": f"${d * stock[d]:,.0f}"}
+            {"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0), "Total": f"${d * stock.get(d, 0):,.0f}"}
             for d in DENOMINACIONES
         ])
         st.dataframe(stock_display, use_container_width=True)
