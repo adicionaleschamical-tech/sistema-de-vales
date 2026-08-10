@@ -2,3 +2,4 @@ streamlit
 gspread
 pandas
 google-auth
+plotly==5.18.0
