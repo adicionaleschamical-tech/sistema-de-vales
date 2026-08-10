@@ -6,12 +6,89 @@ from datetime import date
 import calendar
 import time
 import re
+import io
+import base64
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
 
 SHEET_ID = "1nwfjyFdEG06T85HCmouFd279ImyimfcXFZebs07N1gQ"
 
 DENOMINACIONES = [20000, 10000, 3000, 2000, 1000, 500, 100]
+
+# ============================================
+# CONFIGURACIÓN DE ESTILO
+# ============================================
+
+def aplicar_estilo():
+    """Aplica estilos CSS personalizados"""
+    st.markdown("""
+    <style>
+        /* Tarjetas */
+        .card {
+            background-color: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 15px;
+        }
+        .card-dark {
+            background-color: #2d2d2d;
+            color: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            margin-bottom: 15px;
+        }
+        /* Badges */
+        .badge-success {
+            background-color: #28a745;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        .badge-danger {
+            background-color: #dc3545;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        .badge-warning {
+            background-color: #ffc107;
+            color: #212529;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+        /* Dashboard stats */
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+        }
+        .stat-card-green {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+        .stat-card-red {
+            background: linear-gradient(135deg, #cb2d3e 0%, #ef473a 100%);
+        }
+        .stat-card-blue {
+            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+        }
+        /* Títulos */
+        .main-title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+    </style>
+    """, unsafe_allow_html=True)
 
 def conectar_gsheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -21,18 +98,14 @@ def conectar_gsheets():
     return client.open_by_key(SHEET_ID)
 
 def limpiar_numero(valor):
-    """Convierte CUALQUIER formato a número entero"""
     if valor is None:
         return 0
     if isinstance(valor, (int, float)):
         return int(valor)
-    
     valor_str = str(valor).strip()
     if not valor_str:
         return 0
-    
     valor_str = valor_str.replace("$", "").replace("$ ", "")
-    
     if "," in valor_str and "." in valor_str:
         valor_str = valor_str.replace(",", "").replace(".", "")
     elif "," in valor_str:
@@ -43,10 +116,8 @@ def limpiar_numero(valor):
             valor_str = valor_str.replace(".", "")
         elif len(partes) == 2 and len(partes[1]) <= 1:
             valor_str = valor_str.replace(".", "")
-    
     if not valor_str:
         return 0
-    
     try:
         return int(float(valor_str))
     except:
@@ -79,25 +150,20 @@ def contar_miercoles(anio, mes):
     return count
 
 def obtener_dependencias(anio=None, mes=None):
-    """Lee dependencias filtrando por año y mes (si se pasan)"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("dependencias")
         datos = ws.get_all_records()
-        
-        # Si no se pasan año/mes, usar la fecha actual
         if anio is None or mes is None:
             hoy = date.today()
             anio = hoy.year
             mes = hoy.month
-        
         dependencias = []
         for d in datos:
             año_dato = limpiar_numero(d.get("año", 0))
             mes_dato = limpiar_numero(d.get("mes", 0))
             monto = limpiar_numero(d.get("monto_mensual", 0))
             nombre = str(d.get("nombre", "")).strip()
-            
             if nombre and año_dato == anio and mes_dato == mes:
                 dependencias.append({
                     "id": limpiar_numero(d.get("dependencia_id", 0)),
@@ -114,23 +180,17 @@ def obtener_stock_actual():
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
         todos_los_datos = ws.get_all_values()
-        
         stock = {den: 0 for den in DENOMINACIONES}
-        
         for fila in todos_los_datos:
             if len(fila) >= 2:
                 col_a = str(fila[0]).strip() if fila[0] else ""
                 col_b = str(fila[1]).strip() if len(fila) > 1 and fila[1] else ""
-                
                 if not col_a or col_a.lower() in ["denominacion", "denominación", "cantidad", "denomination"]:
                     continue
-                
                 denom_limpio = limpiar_numero(col_a)
                 cantidad = limpiar_numero(col_b)
-                
                 if denom_limpio in stock:
                     stock[denom_limpio] = cantidad
-        
         return stock
     except Exception as e:
         st.error(f"Error al leer stock: {e}")
@@ -140,7 +200,6 @@ def actualizar_stock(stock_nuevo):
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
-        
         for denom, cantidad in stock_nuevo.items():
             cell = ws.find(str(denom))
             if cell:
@@ -286,8 +345,88 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
         return False
 
 # ============================================
-# INTERFAZ PRINCIPAL CON SELECTOR DE MES
+# FUNCIONES DE MEJORAS
 # ============================================
+
+def mostrar_dashboard(dependencias, stock, total_caja, miercoles):
+    """Mejora 3: Resumen ejecutivo / Dashboard"""
+    st.markdown("---")
+    st.subheader("📊 Dashboard Ejecutivo")
+    
+    total_mensual = sum(dep["monto_mensual"] for dep in dependencias)
+    total_semanal = sum(dep["monto_mensual"] / miercoles for dep in dependencias)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown(f"""
+        <div class="stat-card">
+            <h3>${total_caja:,.0f}</h3>
+            <p>💰 Total en Caja</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"""
+        <div class="stat-card stat-card-green">
+            <h3>${total_mensual:,.0f}</h3>
+            <p>📅 Total Mensual</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown(f"""
+        <div class="stat-card stat-card-blue">
+            <h3>${total_semanal:,.0f}</h3>
+            <p>📊 Total Semanal</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col4:
+        diferencia = total_caja - total_semanal
+        color = "stat-card-green" if diferencia >= 0 else "stat-card-red"
+        st.markdown(f"""
+        <div class="stat-card {color}">
+            <h3>${diferencia:,.0f}</h3>
+            <p>{'✅ Disponible' if diferencia >= 0 else '⚠️ Faltante'}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+def mostrar_graficos(reparto):
+    """Mejora 6: Gráficos de distribución"""
+    try:
+        import plotly.express as px
+        
+        st.subheader("📈 Gráfico de Distribución")
+        
+        df_grafico = pd.DataFrame([
+            {"Dependencia": ofi["nombre"], "Total Entregado": ofi["total"], "Cuota": ofi["cuota_objetivo"]}
+            for ofi in reparto
+        ])
+        
+        fig = px.bar(df_grafico, x="Dependencia", y=["Total Entregado", "Cuota"],
+                     title="Distribución por Dependencia",
+                     barmode="group",
+                     color_discrete_sequence=["#667eea", "#38ef7d"])
+        st.plotly_chart(fig, use_container_width=True)
+    except ImportError:
+        st.info("📊 Instala plotly para ver gráficos: pip install plotly")
+
+def descargar_reporte_csv(reparto, fecha):
+    """Mejora 7: Reporte descargable en CSV"""
+    if reparto:
+        df = pd.DataFrame(reparto)
+        csv = df.to_csv(index=False).encode('utf-8')
+        b64 = base64.b64encode(csv).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="distribucion_{fecha}.csv">⬇️ Descargar Reporte CSV</a>'
+        st.markdown(href, unsafe_allow_html=True)
+
+def simular_notificacion(mensaje):
+    """Mejora 10: Notificaciones simuladas"""
+    st.success(f"📧 {mensaje}")
+
+# ============================================
+# INTERFAZ PRINCIPAL
+# ============================================
+
+# Aplicar estilos
+aplicar_estilo()
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -309,30 +448,58 @@ if not st.session_state.logged_in:
                 else:
                     st.error("❌ Usuario o contraseña incorrectos")
 else:
-    st.title("🎫 Sistema de Gestión de Vales")
+    st.markdown('<p class="main-title">🎫 Sistema de Gestión de Vales</p>', unsafe_allow_html=True)
     st.sidebar.success(f"✅ Usuario: {st.session_state.username}")
     
     if st.sidebar.button("🚪 Cerrar sesión"):
         st.session_state.logged_in = False
         st.rerun()
     
-    # ========== SELECTOR DE MES/AÑO EN SIDEBAR ==========
+    # ========== SELECTOR DE MES/AÑO ==========
     st.sidebar.markdown("---")
     st.sidebar.subheader("📅 Seleccionar Mes")
     
     meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     
-    # Obtener mes y año actual
     hoy = date.today()
     mes_actual = hoy.month
     año_actual = hoy.year
     
-    # Selectores en sidebar
     mes_seleccionado = st.sidebar.selectbox("Mes", options=range(1, 13), 
                                             format_func=lambda x: meses[x-1],
                                             index=mes_actual-1)
     año_seleccionado = st.sidebar.number_input("Año", min_value=2020, max_value=2030, value=año_actual)
+    
+    # ========== MODO OSCURO ========== (Mejora 8)
+    st.sidebar.markdown("---")
+    modo_oscuro = st.sidebar.toggle("🌙 Modo Oscuro", value=False)
+    if modo_oscuro:
+        st.markdown("""
+        <style>
+            .stApp {
+                background-color: #1a1a2e;
+                color: #ffffff;
+            }
+            .stDataFrame {
+                background-color: #16213e;
+                color: #ffffff;
+            }
+            .stMetric {
+                background-color: #16213e;
+                border-radius: 10px;
+                padding: 10px;
+            }
+            .card {
+                background-color: #16213e;
+                color: #ffffff;
+            }
+            .main-title {
+                color: #ffffff !important;
+                -webkit-text-fill-color: #ffffff !important;
+            }
+        </style>
+        """, unsafe_allow_html=True)
     
     st.sidebar.markdown("---")
     st.sidebar.info(f"📆 Mostrando datos de {meses[mes_seleccionado-1]} {año_seleccionado}")
@@ -367,6 +534,7 @@ else:
                     agregar_vales(vales_ingreso)
                     registrar_historial(fecha_ingreso, None, "MANUAL", es_ingreso=True, vales_ingresados=vales_ingreso)
                     st.success(f"✅ Se ingresaron ${total_ingreso:,.0f}")
+                    simular_notificacion(f"Ingreso de ${total_ingreso:,.0f} registrado correctamente")
                     st.rerun()
                 else:
                     st.warning("Ingresa al menos un vale")
@@ -389,6 +557,7 @@ else:
                     exito, mensaje = cambiar_vales(desde_denom, desde_cant, hasta_denom, hasta_cant)
                     if exito:
                         st.success(mensaje)
+                        simular_notificacion(f"Cambio de vales registrado: {mensaje}")
                         st.rerun()
                     else:
                         st.error(mensaje)
@@ -397,17 +566,17 @@ else:
     with tab3:
         st.header("🤖 Distribución Automática Semanal")
         
-        # Usar el mes/año seleccionado en sidebar
         dependencias = obtener_dependencias(año_seleccionado, mes_seleccionado)
         stock = obtener_stock_actual()
         total_caja = calcular_total_caja(stock)
+        miercoles = contar_miercoles(año_seleccionado, mes_seleccionado)
         
-        st.metric("💰 Total en caja", f"${total_caja:,.0f}")
+        if dependencias:
+            mostrar_dashboard(dependencias, stock, total_caja, miercoles)
         
         if not dependencias:
             st.warning(f"⚠️ No hay dependencias para {meses[mes_seleccionado-1]} {año_seleccionado}")
         else:
-            miercoles = contar_miercoles(año_seleccionado, mes_seleccionado)
             st.info(f"📆 {meses[mes_seleccionado-1]} {año_seleccionado} tiene **{miercoles} miércoles**")
             
             st.subheader("📊 Dependencias")
@@ -428,19 +597,51 @@ else:
                 else:
                     reparto, stock_nuevo = distribuir_vales_auto(dependencias, stock, miercoles)
                     st.success("✅ Distribución calculada")
+                    
+                    # Mostrar gráficos (Mejora 6)
+                    mostrar_graficos(reparto)
+                    
                     datos_tabla = []
                     for ofi in reparto:
                         datos_tabla.append({"Dependencia": ofi["nombre"], "Cuota": f"${ofi['cuota_objetivo']:,.0f}", "Entregado": f"${ofi['total']:,.0f}", "Diferencia": f"${ofi['cuota_objetivo'] - ofi['total']:,.0f}", "$20k": ofi["vales"][0], "$10k": ofi["vales"][1], "$3k": ofi["vales"][2], "$2k": ofi["vales"][3], "$1k": ofi["vales"][4], "$500": ofi["vales"][5], "$100": ofi["vales"][6]})
                     st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
+                    
+                    # Reporte descargable (Mejora 7)
+                    descargar_reporte_csv(reparto, fecha_dist.strftime("%Y-%m-%d"))
+                    
                     st.session_state.reparto = reparto
                     st.session_state.stock_nuevo = stock_nuevo
                     st.session_state.fecha_dist = fecha_dist
-            if 'reparto' in st.session_state and st.button("✅ Guardar Distribución Auto", type="primary"):
-                if actualizar_stock(st.session_state.stock_nuevo):
-                    registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
-                    registrar_entrega_detallada(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
-                    st.success("🎉 Distribución guardada")
-                    st.rerun()
+            
+            # Confirmación antes de guardar (Mejora 4)
+            if 'reparto' in st.session_state:
+                with st.container():
+                    st.markdown("---")
+                    st.subheader("📋 Confirmar Distribución")
+                    st.info("Revisa el resumen antes de guardar:")
+                    
+                    # Mostrar resumen
+                    total_entregado = sum(ofi["total"] for ofi in st.session_state.reparto)
+                    total_cuotas = sum(ofi["cuota_objetivo"] for ofi in st.session_state.reparto)
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total a entregar", f"${total_entregado:,.0f}")
+                    with col2:
+                        st.metric("Total cuotas", f"${total_cuotas:,.0f}")
+                    with col3:
+                        st.metric("Diferencia", f"${total_cuotas - total_entregado:,.0f}")
+                    
+                    if st.button("✅ Confirmar y Guardar Distribución", type="primary"):
+                        if actualizar_stock(st.session_state.stock_nuevo):
+                            registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
+                            registrar_entrega_detallada(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
+                            st.success("🎉 Distribución guardada exitosamente")
+                            simular_notificacion(f"Distribución del {st.session_state.fecha_dist.strftime('%d/%m/%Y')} guardada")
+                            del st.session_state.reparto
+                            del st.session_state.stock_nuevo
+                            del st.session_state.fecha_dist
+                            st.rerun()
     
     # ========== TAB 4: DISTRIBUCIÓN MANUAL ==========
     with tab4:
@@ -512,5 +713,7 @@ else:
             historial_datos = historial_ws.get_all_records()
             if historial_datos:
                 st.dataframe(pd.DataFrame(historial_datos).tail(30), use_container_width=True)
+            else:
+                st.info("No hay historial")
         except:
             st.info("No hay historial")
