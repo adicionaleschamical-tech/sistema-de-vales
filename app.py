@@ -21,25 +21,17 @@ def conectar_gsheets():
     return client.open_by_key(SHEET_ID)
 
 def limpiar_numero(valor):
-    """Convierte CUALQUIER formato a número entero"""
     if valor is None:
         return 0
     if isinstance(valor, (int, float)):
         return int(valor)
-    
-    # Convertir a string y limpiar
     valor_str = str(valor).strip()
     if not valor_str:
         return 0
-    
-    # Eliminar todo excepto números y puntos
     valor_str = re.sub(r'[^\d.]', '', valor_str)
-    
     if not valor_str:
         return 0
-    
     try:
-        # Si tiene punto decimal, convertirlo
         if '.' in valor_str:
             return int(float(valor_str))
         else:
@@ -47,15 +39,16 @@ def limpiar_numero(valor):
     except:
         return 0
 
+def calcular_total_caja(stock):
+    total = 0
+    for denom, cantidad in stock.items():
+        total += denom * cantidad
+    return total
+
 def verificar_login(username, password):
     try:
         sheet = conectar_gsheets()
-        try:
-            ws = sheet.worksheet("usuarios")
-        except:
-            st.error("❌ No se encuentra la hoja 'usuarios'")
-            return False
-        
+        ws = sheet.worksheet("usuarios")
         datos = ws.get_all_records()
         for user in datos:
             if str(user["username"]).strip() == str(username).strip() and str(user["password_hash"]).strip() == str(password).strip():
@@ -73,18 +66,11 @@ def contar_miercoles(anio, mes):
     return count
 
 def obtener_dependencias():
-    """Lee dependencias DIRECTAMENTE de Google Sheets"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("dependencias")
         datos = ws.get_all_records()
         hoy = date.today()
-        
-        # Mostrar depuración
-        st.write("### 🔍 Depuración - Hoja 'dependencias'")
-        st.write(f"**Año buscado:** {hoy.year}, **Mes buscado:** {hoy.month}")
-        st.write("**Datos leídos:**")
-        st.dataframe(pd.DataFrame(datos))
         
         dependencias = []
         for d in datos:
@@ -93,62 +79,54 @@ def obtener_dependencias():
             monto = limpiar_numero(d.get("monto_mensual", 0))
             nombre = str(d.get("nombre", "")).strip()
             
-            st.write(f"→ {nombre}: año={año_dato}, mes={mes_dato}, monto={monto}")
-            
             if año_dato == hoy.year and mes_dato == hoy.month:
                 dependencias.append({
                     "id": limpiar_numero(d.get("dependencia_id", 0)),
                     "nombre": nombre,
                     "monto_mensual": monto
                 })
-        
-        st.write(f"**✅ Dependencias encontradas:** {len(dependencias)}")
         return dependencias
     except Exception as e:
         st.error(f"Error al leer dependencias: {e}")
         return []
 
 def obtener_stock_actual():
-    """Lee stock DIRECTAMENTE de Google Sheets con conversión correcta"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
         datos = ws.get_all_records()
         
-        # Mostrar depuración
-        st.write("### 🔍 Depuración - Hoja 'vales_disponibles'")
-        st.write("**Datos leídos (raw):**")
+        # DEPURACIÓN: Mostrar nombres de columnas
+        st.write("### 🔍 Columnas en 'vales_disponibles':")
+        if datos:
+            st.write(list(datos[0].keys()))
+        st.write("### 🔍 Datos completos:")
         st.dataframe(pd.DataFrame(datos))
         
-        # Inicializar stock con todas las denominaciones en 0
         stock = {den: 0 for den in DENOMINACIONES}
         
-        # Procesar cada fila
-        for idx, row in enumerate(datos):
-            # Obtener denominación y cantidad (como vienen de la hoja)
-            denom_raw = row.get("denominacion", 0)
-            cant_raw = row.get("cantidad", 0)
-            
-            # Limpiar y convertir a número
-            denom_limpio = limpiar_numero(denom_raw)
-            cantidad = limpiar_numero(cant_raw)
-            
-            st.write(f"**Fila {idx+1}:** denom_raw='{denom_raw}' → {denom_limpio}, cant_raw='{cant_raw}' → {cantidad}")
-            
-            # Buscar si la denominación está en nuestra lista (comparar como números)
-            denom_encontrada = None
-            for d in DENOMINACIONES:
-                if denom_limpio == d:
-                    denom_encontrada = d
+        for row in datos:
+            # Buscar denominación (puede llamarse diferente)
+            denom_raw = None
+            for key in row.keys():
+                if "denomin" in key.lower():
+                    denom_raw = row[key]
                     break
             
-            if denom_encontrada is not None:
-                stock[denom_encontrada] = cantidad
-                st.write(f"  ✅ Asignado: ${denom_encontrada} → {cantidad}")
-            else:
-                st.write(f"  ⚠️ Denominación {denom_limpio} no reconocida (buscando en {DENOMINACIONES})")
+            # Buscar cantidad (puede llamarse diferente)
+            cant_raw = None
+            for key in row.keys():
+                if "cant" in key.lower():
+                    cant_raw = row[key]
+                    break
+            
+            if denom_raw is not None:
+                denom_limpio = limpiar_numero(denom_raw)
+                cantidad = limpiar_numero(cant_raw if cant_raw is not None else 0)
+                
+                if denom_limpio in stock:
+                    stock[denom_limpio] = cantidad
         
-        st.write(f"**✅ Stock final:** {stock}")
         return stock
     except Exception as e:
         st.error(f"Error al leer stock: {e}")
@@ -180,48 +158,18 @@ def agregar_vales(vales_ingreso):
 def cambiar_vales(desde_denom, desde_cant, hasta_denom, hasta_cant):
     try:
         stock_actual = obtener_stock_actual()
-        
         if stock_actual[desde_denom] < desde_cant:
-            return False, f"No hay suficientes vales de ${desde_denom:,.0f}. Disponibles: {stock_actual[desde_denom]}"
-        
+            return False, f"No hay suficientes vales de ${desde_denom:,.0f}"
         stock_actual[desde_denom] -= desde_cant
         stock_actual[hasta_denom] += hasta_cant
-        
         actualizar_stock(stock_actual)
-        registrar_cambio_historial(desde_denom, desde_cant, hasta_denom, hasta_cant)
-        
-        return True, f"Cambio exitoso: {desde_cant} x ${desde_denom:,.0f} → {hasta_cant} x ${hasta_denom:,.0f}"
+        return True, f"Cambio exitoso"
     except Exception as e:
         return False, f"Error: {e}"
-
-def registrar_cambio_historial(desde_denom, desde_cant, hasta_denom, hasta_cant):
-    try:
-        sheet = conectar_gsheets()
-        
-        try:
-            cambios_ws = sheet.worksheet("cambios_vales")
-        except:
-            cambios_ws = sheet.add_worksheet(title="cambios_vales", rows="1000", cols="10")
-            cambios_ws.append_row(["fecha", "desde_denominacion", "desde_cantidad", "hasta_denominacion", "hasta_cantidad", "descripcion"])
-        
-        nueva_fila = [
-            str(date.today()),
-            desde_denom,
-            desde_cant,
-            hasta_denom,
-            hasta_cant,
-            f"Cambio: {desde_cant} x ${desde_denom} por {hasta_cant} x ${hasta_denom}"
-        ]
-        cambios_ws.append_row(nueva_fila)
-        return True
-    except Exception as e:
-        st.error(f"Error al registrar cambio: {e}")
-        return False
 
 def registrar_entrega_detallada(fecha, reparto, tipo):
     try:
         sheet = conectar_gsheets()
-        
         try:
             detalle_ws = sheet.worksheet("detalle_entregas")
         except:
@@ -230,20 +178,12 @@ def registrar_entrega_detallada(fecha, reparto, tipo):
             for d in DENOMINACIONES:
                 encabezados.append(f"vale_{d}")
             detalle_ws.append_row(encabezados)
-        
         for ofi in reparto:
-            nueva_fila = [
-                str(fecha),
-                ofi.get("id", 0),
-                ofi["nombre"],
-                ofi.get("cuota_objetivo", 0),
-                ofi["total"]
-            ]
+            nueva_fila = [str(fecha), ofi.get("id", 0), ofi["nombre"], ofi.get("cuota_objetivo", 0), ofi["total"]]
             for j, denom in enumerate(DENOMINACIONES):
                 nueva_fila.append(ofi["vales"][j])
             detalle_ws.append_row(nueva_fila)
             time.sleep(0.05)
-        
         return True
     except Exception as e:
         st.error(f"Error al registrar detalle: {e}")
@@ -260,13 +200,11 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
             "vales": [0, 0, 0, 0, 0, 0, 0],
             "total": 0
         })
-    
     stock = stock_actual.copy()
     
     def calcular_combinacion_exacta(monto, stock_disponible):
         combinacion = [0, 0, 0, 0, 0, 0, 0]
         resto = monto
-        
         for j, valor_vale in enumerate(DENOMINACIONES):
             if resto <= 0:
                 break
@@ -281,7 +219,6 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
                             usar = max(0, usar - 1)
                     combinacion[j] = usar
                     resto -= usar * valor_vale
-        
         for j, valor_vale in enumerate(DENOMINACIONES):
             if resto <= 0:
                 break
@@ -291,43 +228,26 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
                     necesarios = min(disponibles, resto // valor_vale)
                     combinacion[j] += necesarios
                     resto -= necesarios * valor_vale
-        
         return combinacion, resto
     
     for ofi in reparto:
         monto_necesario = ofi["cuota_objetivo"]
         combinacion, resto = calcular_combinacion_exacta(monto_necesario, stock)
-        
         ofi["vales"] = combinacion
         ofi["total"] = monto_necesario - resto
-        
         for j, valor_vale in enumerate(DENOMINACIONES):
             stock[valor_vale] -= combinacion[j]
-    
     return reparto, stock
 
 def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados=None):
     try:
         sheet = conectar_gsheets()
-        
         try:
             historial_ws = sheet.worksheet("entregas_semanales")
         except:
             historial_ws = sheet.add_worksheet(title="entregas_semanales", rows="1000", cols="20")
-        
         if es_ingreso and vales_ingresados:
-            nueva_fila = [
-                str(fecha),
-                0,
-                vales_ingresados.get(100, 0),
-                vales_ingresados.get(500, 0),
-                vales_ingresados.get(1000, 0),
-                vales_ingresados.get(2000, 0),
-                vales_ingresados.get(3000, 0),
-                vales_ingresados.get(10000, 0),
-                vales_ingresados.get(20000, 0),
-                f"INGRESO - {tipo}"
-            ]
+            nueva_fila = [str(fecha), 0, vales_ingresados.get(100, 0), vales_ingresados.get(500, 0), vales_ingresados.get(1000, 0), vales_ingresados.get(2000, 0), vales_ingresados.get(3000, 0), vales_ingresados.get(10000, 0), vales_ingresados.get(20000, 0), f"INGRESO - {tipo}"]
         else:
             totales = [0, 0, 0, 0, 0, 0, 0]
             for ofi in reparto:
@@ -338,20 +258,7 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
                 totales[4] += ofi["vales"][2]
                 totales[5] += ofi["vales"][1]
                 totales[6] += ofi["vales"][0]
-            
-            nueva_fila = [
-                str(fecha),
-                0,
-                totales[0],
-                totales[1],
-                totales[2],
-                totales[3],
-                totales[4],
-                totales[5],
-                totales[6],
-                f"DISTRIBUCION - {tipo}"
-            ]
-        
+            nueva_fila = [str(fecha), 0, totales[0], totales[1], totales[2], totales[3], totales[4], totales[5], totales[6], f"DISTRIBUCION - {tipo}"]
         historial_ws.append_row(nueva_fila)
         time.sleep(0.05)
         return True
@@ -390,22 +297,15 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
-    with st.expander("🔧 Verificar conexión con Google Sheets"):
-        try:
-            sheet = conectar_gsheets()
-            st.success("✅ Conexión exitosa")
-            st.write(f"**Sheet:** {sheet.title}")
-            st.write("**Hojas disponibles:**")
-            for ws in sheet.worksheets():
-                st.write(f"  - {ws.title}")
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
-    
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📦 Ingresar Vales", "🔄 Cambiar Vales", "🤖 Distribución Auto", "✏️ Distribución Manual", "💰 Stock Actual", "📜 Historial"])
     
     # ========== TAB 1: INGRESAR VALES ==========
     with tab1:
         st.header("📥 Ingreso de nuevos vales")
+        stock_actual = obtener_stock_actual()
+        total_caja = calcular_total_caja(stock_actual)
+        st.metric("💰 Total en caja", f"${total_caja:,.0f}")
+        
         with st.form("ingreso_vales"):
             col1, col2 = st.columns(2)
             with col1:
@@ -417,11 +317,9 @@ else:
                 v1000 = st.number_input("Vales de $1.000", min_value=0, value=0, step=1)
                 v500 = st.number_input("Vales de $500", min_value=0, value=0, step=1)
                 v100 = st.number_input("Vales de $100", min_value=0, value=0, step=1)
-            
             fecha_ingreso = st.date_input("Fecha de ingreso", value=date.today())
             total_ingreso = v20000*20000 + v10000*10000 + v3000*3000 + v2000*2000 + v1000*1000 + v500*500 + v100*100
             st.metric("💰 Total a ingresar", f"${total_ingreso:,.0f}")
-            
             if st.form_submit_button("✅ Confirmar Ingreso", type="primary"):
                 if total_ingreso > 0:
                     vales_ingreso = {20000: v20000, 10000: v10000, 3000: v3000, 2000: v2000, 1000: v1000, 500: v500, 100: v100}
@@ -435,23 +333,14 @@ else:
     # ========== TAB 2: CAMBIAR VALES ==========
     with tab2:
         st.header("🔄 Cambiar Vales")
-        st.info("Ejemplo: Cambiar 1 vale de $10.000 por 5 vales de $2.000")
-        
         with st.form("cambio_vales"):
-            st.subheader("De (sacar):")
             col1, col2 = st.columns(2)
             with col1:
                 desde_denom = st.selectbox("Denominación origen", options=DENOMINACIONES, format_func=lambda x: f"${x:,.0f}")
-            with col2:
                 desde_cant = st.number_input("Cantidad a sacar", min_value=1, value=1, step=1)
-            
-            st.subheader("A (agregar):")
-            col3, col4 = st.columns(2)
-            with col3:
+            with col2:
                 hasta_denom = st.selectbox("Denominación destino", options=DENOMINACIONES, format_func=lambda x: f"${x:,.0f}")
-            with col4:
                 hasta_cant = st.number_input("Cantidad a agregar", min_value=1, value=1, step=1)
-            
             if st.form_submit_button("🔄 Ejecutar Cambio", type="primary"):
                 if desde_denom == hasta_denom:
                     st.error("No puedes cambiar la misma denominación")
@@ -466,259 +355,114 @@ else:
     # ========== TAB 3: DISTRIBUCIÓN AUTOMÁTICA ==========
     with tab3:
         st.header("🤖 Distribución Automática Semanal")
-        
         hoy = date.today()
-        
         dependencias = obtener_dependencias()
         stock = obtener_stock_actual()
-        
-        st.write("---")
-        st.write("### 📊 Resultados de la lectura")
-        st.write(f"**Dependencias encontradas:** {len(dependencias)}")
-        st.write("**Stock:**")
-        for denom in DENOMINACIONES:
-            st.write(f"  - ${denom:,}: {stock.get(denom, 0)} vales")
-        st.write("---")
+        total_caja = calcular_total_caja(stock)
+        st.metric("💰 Total en caja", f"${total_caja:,.0f}")
         
         if not dependencias:
             st.warning("⚠️ No hay dependencias para el mes actual")
-            st.info(f"Buscando: año={hoy.year}, mes={hoy.month}")
-            st.info("Verificá que en la hoja 'dependencias' los valores de 'año' y 'mes' coincidan con la fecha actual.")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
-            
             st.subheader("📊 Dependencias")
             tabla_deps = []
             for dep in dependencias:
                 monto_semanal = dep["monto_mensual"] / miercoles
-                tabla_deps.append({
-                    "ID": dep["id"],
-                    "Dependencia": dep["nombre"],
-                    "Monto Mensual": f"${dep['monto_mensual']:,.0f}",
-                    "Monto Semanal": f"${monto_semanal:,.0f}"
-                })
+                tabla_deps.append({"ID": dep["id"], "Dependencia": dep["nombre"], "Monto Mensual": f"${dep['monto_mensual']:,.0f}", "Monto Semanal": f"${monto_semanal:,.0f}"})
             st.dataframe(pd.DataFrame(tabla_deps), use_container_width=True)
-            
             st.subheader("💰 Stock Actual")
-            stock_df = pd.DataFrame([
-                {"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0)}
-                for d in DENOMINACIONES
-            ])
+            stock_df = pd.DataFrame([{"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0)} for d in DENOMINACIONES])
             st.dataframe(stock_df, use_container_width=True)
-            
-            st.markdown("---")
             fecha_dist = st.date_input("Fecha de distribución (miércoles)", value=hoy)
-            
             if st.button("📦 Calcular Distribución Auto", type="primary"):
                 if fecha_dist.weekday() != 2:
                     st.warning("⚠️ La distribución debe hacerse en un miércoles")
                 else:
                     reparto, stock_nuevo = distribuir_vales_auto(dependencias, stock, miercoles)
                     st.success("✅ Distribución calculada")
-                    
                     datos_tabla = []
                     for ofi in reparto:
-                        datos_tabla.append({
-                            "Dependencia": ofi["nombre"],
-                            "Cuota": f"${ofi['cuota_objetivo']:,.0f}",
-                            "Entregado": f"${ofi['total']:,.0f}",
-                            "Diferencia": f"${ofi['cuota_objetivo'] - ofi['total']:,.0f}",
-                            "$20k": ofi["vales"][0],
-                            "$10k": ofi["vales"][1],
-                            "$3k": ofi["vales"][2],
-                            "$2k": ofi["vales"][3],
-                            "$1k": ofi["vales"][4],
-                            "$500": ofi["vales"][5],
-                            "$100": ofi["vales"][6],
-                        })
+                        datos_tabla.append({"Dependencia": ofi["nombre"], "Cuota": f"${ofi['cuota_objetivo']:,.0f}", "Entregado": f"${ofi['total']:,.0f}", "Diferencia": f"${ofi['cuota_objetivo'] - ofi['total']:,.0f}", "$20k": ofi["vales"][0], "$10k": ofi["vales"][1], "$3k": ofi["vales"][2], "$2k": ofi["vales"][3], "$1k": ofi["vales"][4], "$500": ofi["vales"][5], "$100": ofi["vales"][6]})
                     st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
-                    
                     st.session_state.reparto = reparto
                     st.session_state.stock_nuevo = stock_nuevo
                     st.session_state.fecha_dist = fecha_dist
-            
-            if 'reparto' in st.session_state:
-                if st.button("✅ Guardar Distribución Auto", type="primary"):
-                    with st.spinner("Actualizando stock..."):
-                        if actualizar_stock(st.session_state.stock_nuevo):
-                            registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
-                            registrar_entrega_detallada(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
-                            st.success("🎉 Distribución guardada exitosamente")
-                            del st.session_state.reparto
-                            del st.session_state.stock_nuevo
-                            del st.session_state.fecha_dist
-                            st.rerun()
-                        else:
-                            st.error("Error al actualizar el stock")
+            if 'reparto' in st.session_state and st.button("✅ Guardar Distribución Auto", type="primary"):
+                if actualizar_stock(st.session_state.stock_nuevo):
+                    registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
+                    registrar_entrega_detallada(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
+                    st.success("🎉 Distribución guardada")
+                    st.rerun()
     
     # ========== TAB 4: DISTRIBUCIÓN MANUAL ==========
     with tab4:
         st.header("✏️ Distribución Manual Semanal")
-        
         hoy = date.today()
         dependencias = obtener_dependencias()
-        
         if not dependencias:
-            st.warning("No hay dependencias para el mes actual")
+            st.warning("No hay dependencias")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
-            
-            st.subheader("📊 Cuotas Semanales por Dependencia")
-            cuotas = {}
-            for dep in dependencias:
-                cuota = dep["monto_mensual"] / miercoles
-                cuotas[dep["id"]] = cuota
-                st.metric(f"{dep['nombre']}", f"${cuota:,.0f}")
-            
             stock = obtener_stock_actual()
-            st.subheader("💰 Stock Disponible para Distribuir")
-            stock_df = pd.DataFrame([
-                {"Denominación": f"${d:,.0f}", "Cantidad disponible": stock.get(d, 0)}
-                for d in DENOMINACIONES
-            ])
+            total_caja = calcular_total_caja(stock)
+            st.metric("💰 Total en caja", f"${total_caja:,.0f}")
+            st.subheader("💰 Stock Disponible")
+            stock_df = pd.DataFrame([{"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0)} for d in DENOMINACIONES])
             st.dataframe(stock_df, use_container_width=True)
-            
-            st.markdown("---")
-            st.subheader("✏️ Asignación Manual de Vales")
-            
-            fecha_manual = st.date_input("Fecha de distribución", value=hoy)
             
             if 'manual_asignaciones' not in st.session_state:
                 st.session_state.manual_asignaciones = {}
             
             reparto_manual = []
             for dep in dependencias:
-                st.markdown(f"### {dep['nombre']} - Cuota: ${cuotas[dep['id']]:,.0f}")
-                
+                cuota = dep["monto_mensual"] / miercoles
+                st.markdown(f"### {dep['nombre']} - Cuota: ${cuota:,.0f}")
                 cols = st.columns(7)
                 vales_asignados = []
                 total_asignado = 0
-                
                 for i, denom in enumerate(DENOMINACIONES):
                     with cols[i]:
                         key = f"{dep['id']}_{denom}"
-                        cantidad = st.number_input(
-                            f"${denom:,.0f}",
-                            min_value=0,
-                            value=st.session_state.manual_asignaciones.get(key, 0),
-                            step=1,
-                            key=key
-                        )
+                        cantidad = st.number_input(f"${denom:,.0f}", min_value=0, value=st.session_state.manual_asignaciones.get(key, 0), step=1, key=key)
                         vales_asignados.append(cantidad)
                         total_asignado += cantidad * denom
-                
-                st.metric("Total asignado", f"${total_asignado:,.0f}", delta=f"vs cuota ${cuotas[dep['id']]:,.0f}")
-                
-                if total_asignado > cuotas[dep['id']]:
-                    st.error(f"⚠️ Excede la cuota en ${total_asignado - cuotas[dep['id']]:,.0f}")
-                elif total_asignado < cuotas[dep['id']]:
-                    st.warning(f"Faltan ${cuotas[dep['id']] - total_asignado:,.0f} para completar la cuota")
-                else:
-                    st.success("✅ Monto exacto de la cuota")
-                
-                reparto_manual.append({
-                    "id": dep["id"],
-                    "nombre": dep["nombre"],
-                    "cuota_objetivo": cuotas[dep["id"]],
-                    "vales": vales_asignados,
-                    "total": total_asignado
-                })
-                st.markdown("---")
+                st.metric("Total asignado", f"${total_asignado:,.0f}")
+                reparto_manual.append({"id": dep["id"], "nombre": dep["nombre"], "cuota_objetivo": cuota, "vales": vales_asignados, "total": total_asignado})
             
             if st.button("✅ Guardar Distribución Manual", type="primary"):
                 stock_temp = stock.copy()
-                error_stock = False
-                
                 for ofi in reparto_manual:
                     for j, denom in enumerate(DENOMINACIONES):
                         if ofi["vales"][j] > stock_temp.get(denom, 0):
-                            st.error(f"❌ No hay suficientes vales de ${denom:,.0f} para {ofi['nombre']}. Disponibles: {stock_temp.get(denom, 0)}")
-                            error_stock = True
-                        else:
-                            stock_temp[denom] -= ofi["vales"][j]
-                
-                if error_stock:
-                    st.stop()
-                
-                cuotas_incompletas = []
-                for ofi in reparto_manual:
-                    if ofi["total"] < ofi["cuota_objetivo"]:
-                        cuotas_incompletas.append(ofi["nombre"])
-                
-                if cuotas_incompletas:
-                    st.warning(f"⚠️ Las siguientes dependencias tienen cuotas incompletas: {', '.join(cuotas_incompletas)}")
-                
-                with st.spinner("Guardando distribución manual..."):
-                    actualizar_stock(stock_temp)
-                    registrar_historial(fecha_manual, reparto_manual, "MANUAL")
-                    registrar_entrega_detallada(fecha_manual, reparto_manual, "MANUAL")
-                    st.success("🎉 Distribución manual guardada exitosamente")
-                    st.session_state.manual_asignaciones = {}
-                    st.rerun()
+                            st.error(f"No hay suficientes vales de ${denom:,.0f}")
+                            st.stop()
+                        stock_temp[denom] -= ofi["vales"][j]
+                actualizar_stock(stock_temp)
+                registrar_historial(date.today(), reparto_manual, "MANUAL")
+                registrar_entrega_detallada(date.today(), reparto_manual, "MANUAL")
+                st.success("Distribución guardada")
+                st.rerun()
     
     # ========== TAB 5: STOCK ACTUAL ==========
     with tab5:
         st.header("💰 Stock Actual de Vales")
-        
-        if st.button("🔄 Refrescar stock"):
-            st.rerun()
-        
         stock = obtener_stock_actual()
-        total_dinero = sum(den * stock.get(den, 0) for den in DENOMINACIONES)
-        
-        stock_display = pd.DataFrame([
-            {"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0), "Total": f"${d * stock.get(d, 0):,.0f}"}
-            for d in DENOMINACIONES
-        ])
+        total_caja = calcular_total_caja(stock)
+        stock_display = pd.DataFrame([{"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0), "Total": f"${d * stock.get(d, 0):,.0f}"} for d in DENOMINACIONES])
         st.dataframe(stock_display, use_container_width=True)
-        st.metric("💵 Total en caja", f"${total_dinero:,.0f}")
+        st.metric("💵 Total en caja", f"${total_caja:,.0f}")
     
     # ========== TAB 6: HISTORIAL ==========
     with tab6:
-        st.header("📜 Historial de Movimientos")
-        
-        sub_tab1, sub_tab2, sub_tab3 = st.tabs(["📋 Resumen General", "📋 Detalle por Dependencia", "🔄 Cambios de Vales"])
-        
-        with sub_tab1:
-            st.subheader("Resumen de Ingresos y Distribuciones")
-            try:
-                sheet = conectar_gsheets()
-                historial_ws = sheet.worksheet("entregas_semanales")
-                historial_datos = historial_ws.get_all_records()
-                if historial_datos:
-                    df = pd.DataFrame(historial_datos)
-                    st.dataframe(df.tail(30), use_container_width=True)
-                else:
-                    st.info("No hay movimientos registrados aún")
-            except Exception as e:
-                st.info("No hay historial disponible")
-        
-        with sub_tab2:
-            st.subheader("Detalle de Entregas por Dependencia")
-            try:
-                sheet = conectar_gsheets()
-                detalle_ws = sheet.worksheet("detalle_entregas")
-                detalle_datos = detalle_ws.get_all_records()
-                if detalle_datos:
-                    df = pd.DataFrame(detalle_datos)
-                    st.dataframe(df.tail(30), use_container_width=True)
-                else:
-                    st.info("No hay entregas detalladas aún")
-            except Exception as e:
-                st.info("No hay detalle disponible")
-        
-        with sub_tab3:
-            st.subheader("Historial de Cambios de Vales")
-            try:
-                sheet = conectar_gsheets()
-                cambios_ws = sheet.worksheet("cambios_vales")
-                cambios_datos = cambios_ws.get_all_records()
-                if cambios_datos:
-                    df = pd.DataFrame(cambios_datos)
-                    st.dataframe(df.tail(30), use_container_width=True)
-                else:
-                    st.info("No hay cambios registrados aún")
-            except Exception as e:
-                st.info("No hay historial de cambios")
+        st.header("📜 Historial")
+        try:
+            sheet = conectar_gsheets()
+            historial_ws = sheet.worksheet("entregas_semanales")
+            historial_datos = historial_ws.get_all_records()
+            if historial_datos:
+                st.dataframe(pd.DataFrame(historial_datos).tail(30), use_container_width=True)
+        except:
+            st.info("No hay historial")
