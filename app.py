@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import date
 import calendar
 import time
+import re  # <--- NUEVA IMPORTACIÓN
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
 
@@ -26,16 +27,47 @@ def conectar_gsheets():
     client = gspread.authorize(creds)
     return client.open_by_key(SHEET_ID)
 
+# ============================================
+# FUNCIÓN LIMPIAR NÚMERO MEJORADA
+# ============================================
+
 def limpiar_numero(valor):
+    """Convierte cualquier formato a número entero"""
     if valor is None:
         return 0
     if isinstance(valor, (int, float)):
         return int(valor)
+    
+    # Convertir a string
     valor_str = str(valor).strip()
-    valor_str = valor_str.replace(".", "").replace(" ", "").replace("$", "").replace(",", "")
+    
+    # Si está vacío, retornar 0
+    if not valor_str:
+        return 0
+    
+    # Eliminar signo de pesos
+    valor_str = valor_str.replace("$", "")
+    
+    # Eliminar puntos (separadores de miles)
+    valor_str = valor_str.replace(".", "")
+    
+    # Eliminar comas
+    valor_str = valor_str.replace(",", "")
+    
+    # Eliminar espacios
+    valor_str = valor_str.replace(" ", "")
+    
+    # Si está vacío después de limpiar, retornar 0
+    if not valor_str:
+        return 0
+    
     try:
         return int(float(valor_str))
     except:
+        # Si falla, intentar extraer solo números
+        numeros = re.findall(r'\d+', valor_str)
+        if numeros:
+            return int(''.join(numeros))
         return 0
 
 def verificar_login(username, password):
@@ -81,18 +113,26 @@ def obtener_dependencias(force_refresh=False):
         datos = ws.get_all_records()
         hoy = date.today()
         
+        # MOSTRAR DEPURACIÓN
+        st.write("### 🔍 Depuración - Datos leídos de 'dependencias'")
+        st.dataframe(pd.DataFrame(datos))
+        
         dependencias = []
         for d in datos:
             año_dato = limpiar_numero(d.get("año", 0))
             mes_dato = limpiar_numero(d.get("mes", 0))
+            monto = limpiar_numero(d.get("monto_mensual", 0))
+            
+            st.write(f"Procesando: año={año_dato}, mes={mes_dato}, monto={monto}, buscando año={hoy.year}, mes={hoy.month}")
             
             if año_dato == hoy.year and mes_dato == hoy.month:
-                monto = limpiar_numero(d.get("monto_mensual", 0))
                 dependencias.append({
                     "id": limpiar_numero(d.get("dependencia_id", 0)),
                     "nombre": str(d.get("nombre", "")),
                     "monto_mensual": monto
                 })
+        
+        st.write(f"✅ Dependencias encontradas: {len(dependencias)}")
         
         _cache_dependencias = dependencias
         _cache_dependencias_timestamp = ahora
@@ -118,12 +158,17 @@ def obtener_stock_actual(force_refresh=False):
         
         datos = ws.get_all_records()
         
+        st.write("### 🔍 Depuración - Datos leídos de 'vales_disponibles'")
+        st.dataframe(pd.DataFrame(datos))
+        
         stock = {den: 0 for den in DENOMINACIONES}
         for row in datos:
             denom = limpiar_numero(row.get("denominacion", 0))
             cantidad = limpiar_numero(row.get("cantidad", 0))
             if denom in stock:
                 stock[denom] = cantidad
+        
+        st.write(f"✅ Stock: {stock}")
         
         _cache_stock = stock.copy()
         _cache_stock_timestamp = ahora
@@ -143,9 +188,8 @@ def actualizar_stock(stock_nuevo):
             cell = ws.find(str(denom))
             if cell:
                 ws.update_cell(cell.row, 2, cantidad)
-                time.sleep(0.1)  # Pequeña pausa para evitar límites de API
+                time.sleep(0.1)
         
-        # Actualizar caché
         _cache_stock = stock_nuevo.copy()
         _cache_stock_timestamp = time.time()
         return True
@@ -452,7 +496,8 @@ else:
         dependencias = obtener_dependencias()
         
         if not dependencias:
-            st.warning("No hay dependencias para el mes actual")
+            st.warning("⚠️ No hay dependencias para el mes actual")
+            st.info(f"Buscando: año={hoy.year}, mes={hoy.month}")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
