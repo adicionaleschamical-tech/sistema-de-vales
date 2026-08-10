@@ -78,12 +78,18 @@ def contar_miercoles(anio, mes):
             count += 1
     return count
 
-def obtener_dependencias():
+def obtener_dependencias(anio=None, mes=None):
+    """Lee dependencias filtrando por año y mes (si se pasan)"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("dependencias")
         datos = ws.get_all_records()
-        hoy = date.today()
+        
+        # Si no se pasan año/mes, usar la fecha actual
+        if anio is None or mes is None:
+            hoy = date.today()
+            anio = hoy.year
+            mes = hoy.month
         
         dependencias = []
         for d in datos:
@@ -92,7 +98,7 @@ def obtener_dependencias():
             monto = limpiar_numero(d.get("monto_mensual", 0))
             nombre = str(d.get("nombre", "")).strip()
             
-            if nombre and año_dato == hoy.year and mes_dato == hoy.month:
+            if nombre and año_dato == anio and mes_dato == mes:
                 dependencias.append({
                     "id": limpiar_numero(d.get("dependencia_id", 0)),
                     "nombre": nombre,
@@ -280,7 +286,7 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
         return False
 
 # ============================================
-# INTERFAZ PRINCIPAL
+# INTERFAZ PRINCIPAL CON SELECTOR DE MES
 # ============================================
 
 if "logged_in" not in st.session_state:
@@ -310,6 +316,28 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
+    # ========== SELECTOR DE MES/AÑO EN SIDEBAR ==========
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📅 Seleccionar Mes")
+    
+    meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+             "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+    
+    # Obtener mes y año actual
+    hoy = date.today()
+    mes_actual = hoy.month
+    año_actual = hoy.year
+    
+    # Selectores en sidebar
+    mes_seleccionado = st.sidebar.selectbox("Mes", options=range(1, 13), 
+                                            format_func=lambda x: meses[x-1],
+                                            index=mes_actual-1)
+    año_seleccionado = st.sidebar.number_input("Año", min_value=2020, max_value=2030, value=año_actual)
+    
+    st.sidebar.markdown("---")
+    st.sidebar.info(f"📆 Mostrando datos de {meses[mes_seleccionado-1]} {año_seleccionado}")
+    
+    # ========== TABS ==========
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📦 Ingresar Vales", "🔄 Cambiar Vales", "🤖 Distribución Auto", "✏️ Distribución Manual", "💰 Stock Actual", "📜 Historial"])
     
     # ========== TAB 1: INGRESAR VALES ==========
@@ -368,27 +396,32 @@ else:
     # ========== TAB 3: DISTRIBUCIÓN AUTOMÁTICA ==========
     with tab3:
         st.header("🤖 Distribución Automática Semanal")
-        hoy = date.today()
-        dependencias = obtener_dependencias()
+        
+        # Usar el mes/año seleccionado en sidebar
+        dependencias = obtener_dependencias(año_seleccionado, mes_seleccionado)
         stock = obtener_stock_actual()
         total_caja = calcular_total_caja(stock)
+        
         st.metric("💰 Total en caja", f"${total_caja:,.0f}")
         
         if not dependencias:
-            st.warning("⚠️ No hay dependencias para el mes actual")
+            st.warning(f"⚠️ No hay dependencias para {meses[mes_seleccionado-1]} {año_seleccionado}")
         else:
-            miercoles = contar_miercoles(hoy.year, hoy.month)
-            st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
+            miercoles = contar_miercoles(año_seleccionado, mes_seleccionado)
+            st.info(f"📆 {meses[mes_seleccionado-1]} {año_seleccionado} tiene **{miercoles} miércoles**")
+            
             st.subheader("📊 Dependencias")
             tabla_deps = []
             for dep in dependencias:
                 monto_semanal = dep["monto_mensual"] / miercoles
                 tabla_deps.append({"ID": dep["id"], "Dependencia": dep["nombre"], "Monto Mensual": f"${dep['monto_mensual']:,.0f}", "Monto Semanal": f"${monto_semanal:,.0f}"})
             st.dataframe(pd.DataFrame(tabla_deps), use_container_width=True)
+            
             st.subheader("💰 Stock Actual")
             stock_df = pd.DataFrame([{"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0)} for d in DENOMINACIONES])
             st.dataframe(stock_df, use_container_width=True)
-            fecha_dist = st.date_input("Fecha de distribución (miércoles)", value=hoy)
+            
+            fecha_dist = st.date_input("Fecha de distribución (miércoles)", value=date.today())
             if st.button("📦 Calcular Distribución Auto", type="primary"):
                 if fecha_dist.weekday() != 2:
                     st.warning("⚠️ La distribución debe hacerse en un miércoles")
@@ -412,13 +445,13 @@ else:
     # ========== TAB 4: DISTRIBUCIÓN MANUAL ==========
     with tab4:
         st.header("✏️ Distribución Manual Semanal")
-        hoy = date.today()
-        dependencias = obtener_dependencias()
+        
+        dependencias = obtener_dependencias(año_seleccionado, mes_seleccionado)
         if not dependencias:
-            st.warning("No hay dependencias")
+            st.warning(f"No hay dependencias para {meses[mes_seleccionado-1]} {año_seleccionado}")
         else:
-            miercoles = contar_miercoles(hoy.year, hoy.month)
-            st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
+            miercoles = contar_miercoles(año_seleccionado, mes_seleccionado)
+            st.info(f"📆 {meses[mes_seleccionado-1]} {año_seleccionado} tiene **{miercoles} miércoles**")
             stock = obtener_stock_actual()
             total_caja = calcular_total_caja(stock)
             st.metric("💰 Total en caja", f"${total_caja:,.0f}")
