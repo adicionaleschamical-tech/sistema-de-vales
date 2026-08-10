@@ -21,7 +21,7 @@ def conectar_gsheets():
     return client.open_by_key(SHEET_ID)
 
 def limpiar_numero(valor):
-    """Convierte CUALQUIER formato a número entero (maneja $2,640.000 correctamente)"""
+    """Convierte CUALQUIER formato a número entero"""
     if valor is None:
         return 0
     if isinstance(valor, (int, float)):
@@ -31,10 +31,8 @@ def limpiar_numero(valor):
     if not valor_str:
         return 0
     
-    # Quitar signo de pesos
     valor_str = valor_str.replace("$", "").replace("$ ", "")
     
-    # Para números con formato latino: 2,640.000 (coma como separador de miles, punto como decimal)
     if "," in valor_str and "." in valor_str:
         valor_str = valor_str.replace(",", "").replace(".", "")
     elif "," in valor_str:
@@ -87,10 +85,6 @@ def obtener_dependencias():
         datos = ws.get_all_records()
         hoy = date.today()
         
-        st.write("### 🔍 Depuración - Hoja 'dependencias'")
-        st.write("**Datos leídos (raw):**")
-        st.dataframe(pd.DataFrame(datos))
-        
         dependencias = []
         for d in datos:
             año_dato = limpiar_numero(d.get("año", 0))
@@ -98,16 +92,12 @@ def obtener_dependencias():
             monto = limpiar_numero(d.get("monto_mensual", 0))
             nombre = str(d.get("nombre", "")).strip()
             
-            st.write(f"→ {nombre}: año={año_dato}, mes={mes_dato}, monto={monto}")
-            
-            if año_dato == hoy.year and mes_dato == hoy.month:
+            if nombre and año_dato == hoy.year and mes_dato == hoy.month:
                 dependencias.append({
                     "id": limpiar_numero(d.get("dependencia_id", 0)),
                     "nombre": nombre,
                     "monto_mensual": monto
                 })
-        
-        st.write(f"**✅ Dependencias encontradas:** {len(dependencias)}")
         return dependencias
     except Exception as e:
         st.error(f"Error al leer dependencias: {e}")
@@ -119,17 +109,9 @@ def obtener_stock_actual():
         ws = sheet.worksheet("vales_disponibles")
         todos_los_datos = ws.get_all_values()
         
-        st.write("### 🔍 Depuración - Hoja 'vales_disponibles'")
-        st.write(f"**Total de filas leídas:** {len(todos_los_datos)}")
-        
-        if todos_los_datos:
-            st.write("**Primeras 5 filas:**")
-            df_crudo = pd.DataFrame(todos_los_datos[:5])
-            st.dataframe(df_crudo)
-        
         stock = {den: 0 for den in DENOMINACIONES}
         
-        for idx, fila in enumerate(todos_los_datos):
+        for fila in todos_los_datos:
             if len(fila) >= 2:
                 col_a = str(fila[0]).strip() if fila[0] else ""
                 col_b = str(fila[1]).strip() if len(fila) > 1 and fila[1] else ""
@@ -143,7 +125,6 @@ def obtener_stock_actual():
                 if denom_limpio in stock:
                     stock[denom_limpio] = cantidad
         
-        st.write(f"**✅ Stock final:** {stock}")
         return stock
     except Exception as e:
         st.error(f"Error al leer stock: {e}")
@@ -180,9 +161,24 @@ def cambiar_vales(desde_denom, desde_cant, hasta_denom, hasta_cant):
         stock_actual[desde_denom] -= desde_cant
         stock_actual[hasta_denom] += hasta_cant
         actualizar_stock(stock_actual)
+        registrar_cambio_historial(desde_denom, desde_cant, hasta_denom, hasta_cant)
         return True, "Cambio exitoso"
     except Exception as e:
         return False, f"Error: {e}"
+
+def registrar_cambio_historial(desde_denom, desde_cant, hasta_denom, hasta_cant):
+    try:
+        sheet = conectar_gsheets()
+        try:
+            cambios_ws = sheet.worksheet("cambios_vales")
+        except:
+            cambios_ws = sheet.add_worksheet(title="cambios_vales", rows="1000", cols="10")
+            cambios_ws.append_row(["fecha", "desde_denominacion", "desde_cantidad", "hasta_denominacion", "hasta_cantidad", "descripcion"])
+        nueva_fila = [str(date.today()), desde_denom, desde_cant, hasta_denom, hasta_cant, f"Cambio: {desde_cant} x ${desde_denom} por {hasta_cant} x ${hasta_denom}"]
+        cambios_ws.append_row(nueva_fila)
+        return True
+    except Exception as e:
+        return False
 
 def registrar_entrega_detallada(fecha, reparto, tipo):
     try:
@@ -284,7 +280,7 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
         return False
 
 # ============================================
-# INTERFAZ
+# INTERFAZ PRINCIPAL
 # ============================================
 
 if "logged_in" not in st.session_state:
@@ -380,7 +376,6 @@ else:
         
         if not dependencias:
             st.warning("⚠️ No hay dependencias para el mes actual")
-            st.info(f"Buscando: año={hoy.year}, mes={hoy.month}")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
