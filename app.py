@@ -28,7 +28,6 @@ def limpiar_numero(valor):
     valor_str = str(valor).strip()
     if not valor_str:
         return 0
-    # Quitar todo excepto números y puntos
     valor_str = re.sub(r'[^\d.]', '', valor_str)
     if not valor_str:
         return 0
@@ -89,41 +88,36 @@ def obtener_dependencias():
         return []
 
 def obtener_stock_actual():
-    """Lee stock usando las columnas A y B directamente (sin asumir encabezados)"""
+    """Lee stock usando las columnas A y B directamente"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
         
-        # Obtener TODOS los valores (sin asumir encabezados)
         todos_los_datos = ws.get_all_values()
         
         st.write("### 🔍 Depuración - Datos crudos de 'vales_disponibles'")
-        st.write("**Todas las filas leídas:**")
-        df_crudo = pd.DataFrame(todos_los_datos, columns=["Columna A", "Columna B", "Columna C (ignorada)"])
-        st.dataframe(df_crudo)
+        st.write(f"**Total de filas leídas:** {len(todos_los_datos)}")
+        
+        if todos_los_datos:
+            st.write("**Primeras 5 filas (para depuración):**")
+            df_crudo = pd.DataFrame(todos_los_datos[:5])
+            st.dataframe(df_crudo)
         
         stock = {den: 0 for den in DENOMINACIONES}
         
         for idx, fila in enumerate(todos_los_datos):
             if len(fila) >= 2:
                 col_a = str(fila[0]).strip() if fila[0] else ""
-                col_b = str(fila[1]).strip() if fila[1] else ""
+                col_b = str(fila[1]).strip() if len(fila) > 1 and fila[1] else ""
                 
-                # Si la columna A es "denominacion" o "cantidad" o está vacía, saltar (es encabezado)
-                if col_a.lower() in ["denominacion", "denominación", "cantidad", ""] or not col_a:
-                    st.write(f"**Fila {idx+1}:** '{col_a}' → ignorando (encabezado o vacío)")
+                if not col_a or col_a.lower() in ["denominacion", "denominación", "cantidad", "denomination"]:
                     continue
                 
                 denom_limpio = limpiar_numero(col_a)
                 cantidad = limpiar_numero(col_b)
                 
-                st.write(f"**Fila {idx+1}:** A='{col_a}' → {denom_limpio}, B='{col_b}' → {cantidad}")
-                
                 if denom_limpio in stock:
                     stock[denom_limpio] = cantidad
-                    st.write(f"  ✅ Asignado: ${denom_limpio} → {cantidad}")
-                else:
-                    st.write(f"  ⚠️ Denominación {denom_limpio} no reconocida")
         
         st.write(f"**✅ Stock final:** {stock}")
         return stock
@@ -136,7 +130,6 @@ def actualizar_stock(stock_nuevo):
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
         
-        # Buscar por denominación en la columna A
         for denom, cantidad in stock_nuevo.items():
             cell = ws.find(str(denom))
             if cell:
@@ -267,7 +260,7 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
         return False
 
 # ============================================
-# INTERFAZ - VERSIÓN SIMPLIFICADA PERO COMPLETA
+# INTERFAZ
 # ============================================
 
 if "logged_in" not in st.session_state:
