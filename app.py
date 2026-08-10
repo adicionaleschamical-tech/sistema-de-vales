@@ -32,8 +32,7 @@ def limpiar_numero(valor):
     if not valor_str:
         return 0
     
-    # Si es un número con formato (ej: "1,000" o "$1.000" o "100")
-    # Eliminar caracteres no numéricos excepto el punto decimal
+    # Eliminar todo excepto números y puntos
     valor_str = re.sub(r'[^\d.]', '', valor_str)
     
     if not valor_str:
@@ -126,21 +125,28 @@ def obtener_stock_actual():
         
         # Procesar cada fila
         for idx, row in enumerate(datos):
-            # Obtener denominación y cantidad
+            # Obtener denominación y cantidad (como vienen de la hoja)
             denom_raw = row.get("denominacion", 0)
             cant_raw = row.get("cantidad", 0)
             
-            # Limpiar y convertir
-            denom = limpiar_numero(denom_raw)
+            # Limpiar y convertir a número
+            denom_limpio = limpiar_numero(denom_raw)
             cantidad = limpiar_numero(cant_raw)
             
-            st.write(f"→ Fila {idx+1}: denom_raw='{denom_raw}' → {denom}, cant_raw='{cant_raw}' → {cantidad}")
+            st.write(f"**Fila {idx+1}:** denom_raw='{denom_raw}' → {denom_limpio}, cant_raw='{cant_raw}' → {cantidad}")
             
-            # Solo agregar si la denominación está en nuestra lista
-            if denom in stock:
-                stock[denom] = cantidad
+            # Buscar si la denominación está en nuestra lista (comparar como números)
+            denom_encontrada = None
+            for d in DENOMINACIONES:
+                if denom_limpio == d:
+                    denom_encontrada = d
+                    break
+            
+            if denom_encontrada is not None:
+                stock[denom_encontrada] = cantidad
+                st.write(f"  ✅ Asignado: ${denom_encontrada} → {cantidad}")
             else:
-                st.write(f"  ⚠️ Denominación {denom} no reconocida (no está en {DENOMINACIONES})")
+                st.write(f"  ⚠️ Denominación {denom_limpio} no reconocida (buscando en {DENOMINACIONES})")
         
         st.write(f"**✅ Stock final:** {stock}")
         return stock
