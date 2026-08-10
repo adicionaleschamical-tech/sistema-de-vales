@@ -28,14 +28,12 @@ def limpiar_numero(valor):
     valor_str = str(valor).strip()
     if not valor_str:
         return 0
+    # Quitar todo excepto números y puntos
     valor_str = re.sub(r'[^\d.]', '', valor_str)
     if not valor_str:
         return 0
     try:
-        if '.' in valor_str:
-            return int(float(valor_str))
-        else:
-            return int(valor_str)
+        return int(float(valor_str))
     except:
         return 0
 
@@ -91,42 +89,43 @@ def obtener_dependencias():
         return []
 
 def obtener_stock_actual():
+    """Lee stock usando las columnas A y B directamente (sin asumir encabezados)"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
-        datos = ws.get_all_records()
         
-        # DEPURACIÓN: Mostrar nombres de columnas
-        st.write("### 🔍 Columnas en 'vales_disponibles':")
-        if datos:
-            st.write(list(datos[0].keys()))
-        st.write("### 🔍 Datos completos:")
-        st.dataframe(pd.DataFrame(datos))
+        # Obtener TODOS los valores (sin asumir encabezados)
+        todos_los_datos = ws.get_all_values()
+        
+        st.write("### 🔍 Depuración - Datos crudos de 'vales_disponibles'")
+        st.write("**Todas las filas leídas:**")
+        df_crudo = pd.DataFrame(todos_los_datos, columns=["Columna A", "Columna B", "Columna C (ignorada)"])
+        st.dataframe(df_crudo)
         
         stock = {den: 0 for den in DENOMINACIONES}
         
-        for row in datos:
-            # Buscar denominación (puede llamarse diferente)
-            denom_raw = None
-            for key in row.keys():
-                if "denomin" in key.lower():
-                    denom_raw = row[key]
-                    break
-            
-            # Buscar cantidad (puede llamarse diferente)
-            cant_raw = None
-            for key in row.keys():
-                if "cant" in key.lower():
-                    cant_raw = row[key]
-                    break
-            
-            if denom_raw is not None:
-                denom_limpio = limpiar_numero(denom_raw)
-                cantidad = limpiar_numero(cant_raw if cant_raw is not None else 0)
+        for idx, fila in enumerate(todos_los_datos):
+            if len(fila) >= 2:
+                col_a = str(fila[0]).strip() if fila[0] else ""
+                col_b = str(fila[1]).strip() if fila[1] else ""
+                
+                # Si la columna A es "denominacion" o "cantidad" o está vacía, saltar (es encabezado)
+                if col_a.lower() in ["denominacion", "denominación", "cantidad", ""] or not col_a:
+                    st.write(f"**Fila {idx+1}:** '{col_a}' → ignorando (encabezado o vacío)")
+                    continue
+                
+                denom_limpio = limpiar_numero(col_a)
+                cantidad = limpiar_numero(col_b)
+                
+                st.write(f"**Fila {idx+1}:** A='{col_a}' → {denom_limpio}, B='{col_b}' → {cantidad}")
                 
                 if denom_limpio in stock:
                     stock[denom_limpio] = cantidad
+                    st.write(f"  ✅ Asignado: ${denom_limpio} → {cantidad}")
+                else:
+                    st.write(f"  ⚠️ Denominación {denom_limpio} no reconocida")
         
+        st.write(f"**✅ Stock final:** {stock}")
         return stock
     except Exception as e:
         st.error(f"Error al leer stock: {e}")
@@ -137,6 +136,7 @@ def actualizar_stock(stock_nuevo):
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
         
+        # Buscar por denominación en la columna A
         for denom, cantidad in stock_nuevo.items():
             cell = ws.find(str(denom))
             if cell:
@@ -163,7 +163,7 @@ def cambiar_vales(desde_denom, desde_cant, hasta_denom, hasta_cant):
         stock_actual[desde_denom] -= desde_cant
         stock_actual[hasta_denom] += hasta_cant
         actualizar_stock(stock_actual)
-        return True, f"Cambio exitoso"
+        return True, "Cambio exitoso"
     except Exception as e:
         return False, f"Error: {e}"
 
@@ -267,7 +267,7 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
         return False
 
 # ============================================
-# INTERFAZ
+# INTERFAZ - VERSIÓN SIMPLIFICADA PERO COMPLETA
 # ============================================
 
 if "logged_in" not in st.session_state:
@@ -449,6 +449,8 @@ else:
     # ========== TAB 5: STOCK ACTUAL ==========
     with tab5:
         st.header("💰 Stock Actual de Vales")
+        if st.button("🔄 Refrescar stock"):
+            st.rerun()
         stock = obtener_stock_actual()
         total_caja = calcular_total_caja(stock)
         stock_display = pd.DataFrame([{"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0), "Total": f"${d * stock.get(d, 0):,.0f}"} for d in DENOMINACIONES])
