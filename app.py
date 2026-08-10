@@ -21,16 +21,34 @@ def conectar_gsheets():
     return client.open_by_key(SHEET_ID)
 
 def limpiar_numero(valor):
+    """Convierte CUALQUIER formato a número entero (maneja $2,640.000 correctamente)"""
     if valor is None:
         return 0
     if isinstance(valor, (int, float)):
         return int(valor)
+    
     valor_str = str(valor).strip()
     if not valor_str:
         return 0
-    valor_str = re.sub(r'[^\d.]', '', valor_str)
+    
+    # Quitar signo de pesos
+    valor_str = valor_str.replace("$", "").replace("$ ", "")
+    
+    # Para números con formato latino: 2,640.000 (coma como separador de miles, punto como decimal)
+    if "," in valor_str and "." in valor_str:
+        valor_str = valor_str.replace(",", "").replace(".", "")
+    elif "," in valor_str:
+        valor_str = valor_str.replace(",", "")
+    elif "." in valor_str:
+        partes = valor_str.split(".")
+        if len(partes) > 2:
+            valor_str = valor_str.replace(".", "")
+        elif len(partes) == 2 and len(partes[1]) <= 1:
+            valor_str = valor_str.replace(".", "")
+    
     if not valor_str:
         return 0
+    
     try:
         return int(float(valor_str))
     except:
@@ -69,6 +87,10 @@ def obtener_dependencias():
         datos = ws.get_all_records()
         hoy = date.today()
         
+        st.write("### 🔍 Depuración - Hoja 'dependencias'")
+        st.write("**Datos leídos (raw):**")
+        st.dataframe(pd.DataFrame(datos))
+        
         dependencias = []
         for d in datos:
             año_dato = limpiar_numero(d.get("año", 0))
@@ -76,30 +98,32 @@ def obtener_dependencias():
             monto = limpiar_numero(d.get("monto_mensual", 0))
             nombre = str(d.get("nombre", "")).strip()
             
+            st.write(f"→ {nombre}: año={año_dato}, mes={mes_dato}, monto={monto}")
+            
             if año_dato == hoy.year and mes_dato == hoy.month:
                 dependencias.append({
                     "id": limpiar_numero(d.get("dependencia_id", 0)),
                     "nombre": nombre,
                     "monto_mensual": monto
                 })
+        
+        st.write(f"**✅ Dependencias encontradas:** {len(dependencias)}")
         return dependencias
     except Exception as e:
         st.error(f"Error al leer dependencias: {e}")
         return []
 
 def obtener_stock_actual():
-    """Lee stock usando las columnas A y B directamente"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
-        
         todos_los_datos = ws.get_all_values()
         
-        st.write("### 🔍 Depuración - Datos crudos de 'vales_disponibles'")
+        st.write("### 🔍 Depuración - Hoja 'vales_disponibles'")
         st.write(f"**Total de filas leídas:** {len(todos_los_datos)}")
         
         if todos_los_datos:
-            st.write("**Primeras 5 filas (para depuración):**")
+            st.write("**Primeras 5 filas:**")
             df_crudo = pd.DataFrame(todos_los_datos[:5])
             st.dataframe(df_crudo)
         
@@ -356,6 +380,7 @@ else:
         
         if not dependencias:
             st.warning("⚠️ No hay dependencias para el mes actual")
+            st.info(f"Buscando: año={hoy.year}, mes={hoy.month}")
         else:
             miercoles = contar_miercoles(hoy.year, hoy.month)
             st.info(f"📆 Este mes tiene **{miercoles} miércoles**")
