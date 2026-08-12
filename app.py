@@ -140,7 +140,7 @@ def limpiar_numero(valor):
             partes = valor_str.split(".")
             # Si es decimal (ej: 900.50 o 900.5)
             if len(partes) == 2 and len(partes[1]) <= 2:
-                valor_str = valor_str.replace(".", ",").replace(",", ".")
+                pass  # Mantener el punto como decimal
             # Si es separador de miles (ej: 900.000 o 1.000.000)
             else:
                 valor_str = valor_str.replace(".", "")
@@ -427,33 +427,91 @@ def mostrar_dashboard(dependencias, stock, total_caja, miercoles):
         """, unsafe_allow_html=True)
 
 def mostrar_graficos(reparto):
-    """Mejora 6: Gráficos de distribución"""
+    """Mejora 6: Gráficos de distribución - CORREGIDO con manejo de errores"""
+    if not reparto:
+        st.info("No hay datos para mostrar gráficos")
+        return
+    
     try:
         import plotly.express as px
         
+        # Verificar que los datos tengan las claves necesarias
+        if not all(isinstance(ofi, dict) and "nombre" in ofi and "total" in ofi and "cuota_objetivo" in ofi for ofi in reparto):
+            st.warning("Los datos de distribución no tienen el formato esperado")
+            return
+        
         st.subheader("📈 Gráfico de Distribución")
         
+        # Crear DataFrame con datos válidos
         df_grafico = pd.DataFrame([
-            {"Dependencia": ofi["nombre"], "Total Entregado": ofi["total"], "Cuota": ofi["cuota_objetivo"]}
+            {
+                "Dependencia": str(ofi.get("nombre", "Sin nombre")),
+                "Total Entregado": float(ofi.get("total", 0)),
+                "Cuota": float(ofi.get("cuota_objetivo", 0))
+            }
             for ofi in reparto
         ])
         
-        fig = px.bar(df_grafico, x="Dependencia", y=["Total Entregado", "Cuota"],
-                     title="Distribución por Dependencia",
-                     barmode="group",
-                     color_discrete_sequence=["#667eea", "#38ef7d"])
+        # Verificar que el DataFrame no esté vacío
+        if df_grafico.empty:
+            st.info("No hay datos para mostrar en el gráfico")
+            return
+        
+        # Crear gráfico
+        fig = px.bar(
+            df_grafico, 
+            x="Dependencia", 
+            y=["Total Entregado", "Cuota"],
+            title="Distribución por Dependencia",
+            barmode="group",
+            color_discrete_sequence=["#667eea", "#38ef7d"],
+            text_auto=True
+        )
+        
+        # Ajustar layout
+        fig.update_layout(
+            xaxis_tickangle=-45,
+            yaxis_title="Monto ($)",
+            legend_title="Métrica"
+        )
+        
         st.plotly_chart(fig, use_container_width=True)
+        
     except ImportError:
         st.info("📊 Instala plotly para ver gráficos: pip install plotly")
+    except Exception as e:
+        st.error(f"Error al generar gráfico: {e}")
+        # Mostrar datos para depuración
+        with st.expander("Ver datos del gráfico"):
+            st.dataframe(pd.DataFrame(reparto))
 
 def descargar_reporte_csv(reparto, fecha):
     """Mejora 7: Reporte descargable en CSV"""
     if reparto:
-        df = pd.DataFrame(reparto)
-        csv = df.to_csv(index=False).encode('utf-8')
-        b64 = base64.b64encode(csv).decode()
-        href = f'<a href="data:file/csv;base64,{b64}" download="distribucion_{fecha}.csv">⬇️ Descargar Reporte CSV</a>'
-        st.markdown(href, unsafe_allow_html=True)
+        try:
+            # Crear copia del reparto para no modificar el original
+            df_reporte = []
+            for ofi in reparto:
+                fila = {
+                    "Dependencia": ofi.get("nombre", ""),
+                    "Cuota_Objetivo": ofi.get("cuota_objetivo", 0),
+                    "Total_Entregado": ofi.get("total", 0)
+                }
+                # Agregar desglose por denominación
+                for i, denom in enumerate(DENOMINACIONES):
+                    if "vales" in ofi and len(ofi["vales"]) > i:
+                        fila[f"Vale_{denom}"] = ofi["vales"][i]
+                    else:
+                        fila[f"Vale_{denom}"] = 0
+                df_reporte.append(fila)
+            
+            df = pd.DataFrame(df_reporte)
+            csv = df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+            b64 = base64.b64encode(csv).decode()
+            href = f'<a href="data:file/csv;base64,{b64}" download="distribucion_{fecha}.csv">⬇️ Descargar Reporte CSV</a>'
+            st.markdown(href, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"Error al generar reporte CSV: {e}")
 
 def simular_notificacion(mensaje):
     """Mejora 10: Notificaciones simuladas"""
@@ -636,7 +694,7 @@ else:
                     reparto, stock_nuevo = distribuir_vales_auto(dependencias, stock, miercoles)
                     st.success("✅ Distribución calculada")
                     
-                    # Mostrar gráficos (Mejora 6)
+                    # Mostrar gráficos (Mejora 6 - CORREGIDO)
                     mostrar_graficos(reparto)
                     
                     datos_tabla = []
