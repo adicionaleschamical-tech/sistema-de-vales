@@ -2,18 +2,52 @@ import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
-from datetime import date
+from datetime import date, datetime, timedelta
 import calendar
 import time
 import re
 import io
 import base64
+from functools import lru_cache
+import hashlib
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
 
 SHEET_ID = "1nwfjyFdEG06T85HCmouFd279ImyimfcXFZebs07N1gQ"
 
 DENOMINACIONES = [20000, 10000, 3000, 2000, 1000, 500, 100]
+
+# ============================================
+# CACHÉ PARA REDUCIR PETICIONES A LA API
+# ============================================
+
+class CacheManager:
+    """Gestor de caché para reducir peticiones a la API"""
+    def __init__(self):
+        self.cache = {}
+        self.timestamps = {}
+        self.ttl = 60  # Tiempo de vida en segundos
+    
+    def get(self, key):
+        """Obtener dato del caché si existe y no ha expirado"""
+        if key in self.cache and key in self.timestamps:
+            if (datetime.now() - self.timestamps[key]).seconds < self.ttl:
+                return self.cache[key]
+        return None
+    
+    def set(self, key, value):
+        """Guardar dato en caché"""
+        self.cache[key] = value
+        self.timestamps[key] = datetime.now()
+    
+    def clear(self):
+        """Limpiar caché"""
+        self.cache.clear()
+        self.timestamps.clear()
+
+# Inicializar caché en session_state
+if "cache_manager" not in st.session_state:
+    st.session_state.cache_manager = CacheManager()
 
 # ============================================
 # CONFIGURACIÓN DE ESTILO
@@ -39,7 +73,6 @@ def aplicar_estilo():
             box-shadow: 0 2px 4px rgba(0,0,0,0.3);
             margin-bottom: 15px;
         }
-        /* Badges */
         .badge-success {
             background-color: #28a745;
             color: white;
@@ -61,7 +94,6 @@ def aplicar_estilo():
             border-radius: 20px;
             font-size: 14px;
         }
-        /* Dashboard stats */
         .stat-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -78,7 +110,6 @@ def aplicar_estilo():
         .stat-card-blue {
             background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
         }
-        /* Títulos */
         .main-title {
             font-size: 2.5rem;
             font-weight: 700;
@@ -87,9 +118,15 @@ def aplicar_estilo():
             -webkit-text-fill-color: transparent;
             background-clip: text;
         }
-        /* Estilo para el detalle de historial */
         .historial-detalle {
             background-color: #f0f2f6;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        .warning-box {
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
             border-radius: 10px;
             padding: 15px;
             margin: 10px 0;
@@ -98,11 +135,20 @@ def aplicar_estilo():
     """, unsafe_allow_html=True)
 
 def conectar_gsheets():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-    client = gspread.authorize(creds)
-    return client.open_by_key(SHEET_ID)
+    """Conectar a Google Sheets con reintentos"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+            client = gspread.authorize(creds)
+            return client.open_by_key(SHEET_ID)
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Backoff exponencial
+            else:
+                raise e
 
 def limpiar_numero(valor):
     """Limpia y convierte números de diferentes formatos a enteros"""
@@ -115,51 +161,36 @@ def limpiar_numero(valor):
     if not valor_str:
         return 0
     
-    # Eliminar símbolos de moneda y espacios
     valor_str = valor_str.replace("$", "").replace("$ ", "").replace(" ", "").strip()
     
     if not valor_str:
         return 0
     
-    # Manejar diferentes formatos de números
     try:
-        # Si tiene coma y punto
         if "," in valor_str and "." in valor_str:
-            # Formato chileno/europeo: 1.234.567,89
             if valor_str.rfind(",") > valor_str.rfind("."):
                 valor_str = valor_str.replace(".", "").replace(",", ".")
-            # Formato americano: 1,234,567.89
             else:
                 valor_str = valor_str.replace(",", "")
-        
-        # Si solo tiene coma
         elif "," in valor_str:
             partes = valor_str.split(",")
-            # Si es decimal (ej: 900,50 o 900,5)
             if len(partes) == 2 and len(partes[1]) <= 2:
                 valor_str = valor_str.replace(",", ".")
-            # Si es separador de miles (ej: 900,000 o 1,000,000)
             else:
                 valor_str = valor_str.replace(",", "")
-        
-        # Si solo tiene punto
         elif "." in valor_str:
             partes = valor_str.split(".")
-            # Si es decimal (ej: 900.50 o 900.5)
             if len(partes) == 2 and len(partes[1]) <= 2:
-                pass  # Mantener el punto como decimal
-            # Si es separador de miles (ej: 900.000 o 1.000.000)
+                pass
             else:
                 valor_str = valor_str.replace(".", "")
         
-        # Intentar convertir a entero
         if "." in valor_str:
             return int(float(valor_str))
         else:
             return int(valor_str)
             
     except (ValueError, TypeError):
-        # Si falla la conversión, intentar extraer solo números
         try:
             numeros = re.findall(r'\d+', str(valor))
             if numeros:
@@ -194,15 +225,13 @@ def contar_miercoles(anio, mes):
             count += 1
     return count
 
-def obtener_dependencias(anio=None, mes=None):
+@st.cache_data(ttl=60)
+def obtener_dependencias_cached(anio, mes):
+    """Versión cacheada de obtener_dependencias"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("dependencias")
         datos = ws.get_all_records()
-        if anio is None or mes is None:
-            hoy = date.today()
-            anio = hoy.year
-            mes = hoy.month
         dependencias = []
         for d in datos:
             año_dato = limpiar_numero(d.get("año", 0))
@@ -220,7 +249,16 @@ def obtener_dependencias(anio=None, mes=None):
         st.error(f"Error al leer dependencias: {e}")
         return []
 
-def obtener_stock_actual():
+def obtener_dependencias(anio=None, mes=None):
+    if anio is None or mes is None:
+        hoy = date.today()
+        anio = hoy.year
+        mes = hoy.month
+    return obtener_dependencias_cached(anio, mes)
+
+@st.cache_data(ttl=30)
+def obtener_stock_cached():
+    """Versión cacheada de obtener_stock_actual"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
@@ -241,6 +279,27 @@ def obtener_stock_actual():
         st.error(f"Error al leer stock: {e}")
         return {den: 0 for den in DENOMINACIONES}
 
+def obtener_stock_actual():
+    return obtener_stock_cached()
+
+@st.cache_data(ttl=60)
+def obtener_detalle_entregas_cached():
+    """Versión cacheada de obtener_detalle_entregas"""
+    try:
+        sheet = conectar_gsheets()
+        try:
+            detalle_ws = sheet.worksheet("detalle_entregas")
+            datos = detalle_ws.get_all_records()
+            return datos
+        except:
+            return []
+    except Exception as e:
+        st.error(f"Error al leer detalle de entregas: {e}")
+        return []
+
+def obtener_detalle_entregas():
+    return obtener_detalle_entregas_cached()
+
 def actualizar_stock(stock_nuevo):
     try:
         sheet = conectar_gsheets()
@@ -249,7 +308,9 @@ def actualizar_stock(stock_nuevo):
             cell = ws.find(str(denom))
             if cell:
                 ws.update_cell(cell.row, 2, cantidad)
-                time.sleep(0.1)
+                time.sleep(0.5)  # Pausa más larga para evitar límites
+        # Limpiar caché después de actualizar
+        st.cache_data.clear()
         return True
     except Exception as e:
         st.error(f"Error al actualizar stock: {e}")
@@ -291,7 +352,6 @@ def registrar_cambio_historial(desde_denom, desde_cant, hasta_denom, hasta_cant)
         return False
 
 def registrar_entrega_detallada(fecha, reparto, tipo):
-    """Registra el detalle de cada dependencia en la hoja detalle_entregas"""
     try:
         sheet = conectar_gsheets()
         try:
@@ -315,25 +375,14 @@ def registrar_entrega_detallada(fecha, reparto, tipo):
             for j, denom in enumerate(DENOMINACIONES):
                 nueva_fila.append(ofi["vales"][j])
             detalle_ws.append_row(nueva_fila)
-            time.sleep(0.05)
+            time.sleep(0.3)
+        
+        # Limpiar caché después de registrar
+        st.cache_data.clear()
         return True
     except Exception as e:
         st.error(f"Error al registrar detalle: {e}")
         return False
-
-def obtener_detalle_entregas():
-    """Obtiene el detalle de entregas por dependencia desde la hoja detalle_entregas"""
-    try:
-        sheet = conectar_gsheets()
-        try:
-            detalle_ws = sheet.worksheet("detalle_entregas")
-            datos = detalle_ws.get_all_records()
-            return datos
-        except:
-            return []
-    except Exception as e:
-        st.error(f"Error al leer detalle de entregas: {e}")
-        return []
 
 def distribuir_vales_auto(dependencias, stock_actual, miercoles):
     reparto = []
@@ -386,7 +435,6 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
     return reparto, stock
 
 def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados=None):
-    """Registra el historial de entregas semanales (resumen por tipo de vale)"""
     try:
         sheet = conectar_gsheets()
         try:
@@ -411,13 +459,13 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
         else:
             totales = [0, 0, 0, 0, 0, 0, 0]
             for ofi in reparto:
-                totales[0] += ofi["vales"][6]  # 100
-                totales[1] += ofi["vales"][5]  # 500
-                totales[2] += ofi["vales"][4]  # 1000
-                totales[3] += ofi["vales"][3]  # 2000
-                totales[4] += ofi["vales"][2]  # 3000
-                totales[5] += ofi["vales"][1]  # 10000
-                totales[6] += ofi["vales"][0]  # 20000
+                totales[0] += ofi["vales"][6]
+                totales[1] += ofi["vales"][5]
+                totales[2] += ofi["vales"][4]
+                totales[3] += ofi["vales"][3]
+                totales[4] += ofi["vales"][2]
+                totales[5] += ofi["vales"][1]
+                totales[6] += ofi["vales"][0]
             nueva_fila = [
                 str(fecha), 
                 0, 
@@ -431,7 +479,7 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
                 f"DISTRIBUCION - {tipo}"
             ]
         historial_ws.append_row(nueva_fila)
-        time.sleep(0.05)
+        time.sleep(0.3)
         return True
     except Exception as e:
         st.error(f"Error al registrar historial: {e}")
@@ -442,7 +490,6 @@ def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados
 # ============================================
 
 def mostrar_dashboard(dependencias, stock, total_caja, miercoles):
-    """Mejora 3: Resumen ejecutivo / Dashboard"""
     st.markdown("---")
     st.subheader("📊 Dashboard Ejecutivo")
     
@@ -482,7 +529,6 @@ def mostrar_dashboard(dependencias, stock, total_caja, miercoles):
         """, unsafe_allow_html=True)
 
 def mostrar_graficos(reparto):
-    """Mejora 6: Gráficos de distribución - CORREGIDO con manejo de errores"""
     if not reparto:
         st.info("No hay datos para mostrar gráficos")
         return
@@ -490,14 +536,12 @@ def mostrar_graficos(reparto):
     try:
         import plotly.express as px
         
-        # Verificar que los datos tengan las claves necesarias
         if not all(isinstance(ofi, dict) and "nombre" in ofi and "total" in ofi and "cuota_objetivo" in ofi for ofi in reparto):
             st.warning("Los datos de distribución no tienen el formato esperado")
             return
         
         st.subheader("📈 Gráfico de Distribución")
         
-        # Crear DataFrame con datos válidos
         df_grafico = pd.DataFrame([
             {
                 "Dependencia": str(ofi.get("nombre", "Sin nombre")),
@@ -507,12 +551,10 @@ def mostrar_graficos(reparto):
             for ofi in reparto
         ])
         
-        # Verificar que el DataFrame no esté vacío
         if df_grafico.empty:
             st.info("No hay datos para mostrar en el gráfico")
             return
         
-        # Crear gráfico
         fig = px.bar(
             df_grafico, 
             x="Dependencia", 
@@ -523,7 +565,6 @@ def mostrar_graficos(reparto):
             text_auto=True
         )
         
-        # Ajustar layout
         fig.update_layout(
             xaxis_tickangle=-45,
             yaxis_title="Monto ($)",
@@ -538,7 +579,6 @@ def mostrar_graficos(reparto):
         st.error(f"Error al generar gráfico: {e}")
 
 def descargar_reporte_csv(reparto, fecha):
-    """Mejora 7: Reporte descargable en CSV"""
     if reparto:
         try:
             df_reporte = []
@@ -564,38 +604,30 @@ def descargar_reporte_csv(reparto, fecha):
             st.error(f"Error al generar reporte CSV: {e}")
 
 def simular_notificacion(mensaje):
-    """Mejora 10: Notificaciones simuladas"""
     st.success(f"📧 {mensaje}")
 
 def mostrar_historial_detallado():
-    """Muestra el historial detallado por dependencia"""
     st.header("📜 Historial Detallado por Dependencia")
     
-    # Obtener datos del detalle de entregas
     detalle = obtener_detalle_entregas()
     
     if not detalle:
         st.info("No hay registros de entregas detalladas")
         return
     
-    # Convertir a DataFrame
     df_detalle = pd.DataFrame(detalle)
     
-    # Verificar que tiene los datos esperados
     if "fecha" not in df_detalle.columns:
         st.warning("El formato del historial no es el esperado")
         return
     
-    # Convertir fecha a datetime para mejor manejo
     try:
         df_detalle["fecha"] = pd.to_datetime(df_detalle["fecha"])
     except:
         pass
     
-    # Filtros
     col1, col2 = st.columns(2)
     with col1:
-        # Filtro por fecha
         if not df_detalle.empty and "fecha" in df_detalle.columns:
             fechas_disponibles = sorted(df_detalle["fecha"].unique(), reverse=True)
             fecha_seleccionada = st.selectbox(
@@ -603,7 +635,6 @@ def mostrar_historial_detallado():
                 options=["Todas"] + [str(f) for f in fechas_disponibles[:20]]
             )
     with col2:
-        # Filtro por dependencia
         if not df_detalle.empty and "dependencia_nombre" in df_detalle.columns:
             dependencias_uniq = sorted(df_detalle["dependencia_nombre"].unique())
             dep_seleccionada = st.selectbox(
@@ -611,7 +642,6 @@ def mostrar_historial_detallado():
                 options=["Todas"] + dependencias_uniq
             )
     
-    # Aplicar filtros
     df_filtrado = df_detalle.copy()
     if fecha_seleccionada and fecha_seleccionada != "Todas":
         df_filtrado = df_filtrado[df_filtrado["fecha"].astype(str) == fecha_seleccionada]
@@ -622,10 +652,8 @@ def mostrar_historial_detallado():
         st.info("No hay registros con los filtros seleccionados")
         return
     
-    # Mostrar resumen
     st.subheader("📊 Resumen de la Distribución")
     
-    # Estadísticas
     total_general = df_filtrado["total_entregado"].sum() if "total_entregado" in df_filtrado.columns else 0
     total_cuotas = df_filtrado["cuota_objetivo"].sum() if "cuota_objetivo" in df_filtrado.columns else 0
     
@@ -637,30 +665,23 @@ def mostrar_historial_detallado():
     with col3:
         st.metric("📈 Diferencia", f"${total_cuotas - total_general:,.0f}")
     
-    # Mostrar tabla detallada
     st.subheader("📋 Detalle por Dependencia")
     
-    # Seleccionar columnas a mostrar
     columnas_mostrar = ["fecha", "dependencia_nombre", "cuota_objetivo", "total_entregado", "tipo"]
-    # Agregar columnas de vales si existen
     for denom in DENOMINACIONES:
         col_name = f"vale_{denom}"
         if col_name in df_filtrado.columns:
             columnas_mostrar.append(col_name)
     
-    # Filtrar columnas existentes
     columnas_existentes = [col for col in columnas_mostrar if col in df_filtrado.columns]
     df_mostrar = df_filtrado[columnas_existentes].copy()
     
-    # Formatear números
     for col in df_mostrar.columns:
         if col not in ["fecha", "dependencia_nombre", "tipo"]:
             df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "$0")
     
-    # Mostrar tabla con scroll
     st.dataframe(df_mostrar, use_container_width=True, height=400)
     
-    # Opción para descargar el historial filtrado
     if st.button("📥 Descargar historial filtrado (CSV)"):
         try:
             csv = df_filtrado.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
@@ -670,14 +691,12 @@ def mostrar_historial_detallado():
         except Exception as e:
             st.error(f"Error al descargar: {e}")
     
-    # Gráfico de distribución si hay datos
     if len(df_filtrado) > 0 and "dependencia_nombre" in df_filtrado.columns and "total_entregado" in df_filtrado.columns:
         try:
             import plotly.express as px
             
             st.subheader("📈 Gráfico de Distribución por Dependencia")
             
-            # Agrupar por dependencia si hay múltiples registros
             if len(df_filtrado) > 1:
                 df_agrupado = df_filtrado.groupby("dependencia_nombre")[["total_entregado", "cuota_objetivo"]].sum().reset_index()
                 
@@ -694,10 +713,20 @@ def mostrar_historial_detallado():
             st.info(f"No se pudo generar el gráfico: {e}")
 
 # ============================================
+# FUNCIÓN PARA FORZAR ACTUALIZACIÓN DE CACHÉ
+# ============================================
+
+def forzar_actualizacion():
+    """Limpia el caché y recarga los datos"""
+    st.cache_data.clear()
+    if "cache_manager" in st.session_state:
+        st.session_state.cache_manager.clear()
+    st.rerun()
+
+# ============================================
 # INTERFAZ PRINCIPAL
 # ============================================
 
-# Aplicar estilos
 aplicar_estilo()
 
 if "logged_in" not in st.session_state:
@@ -727,7 +756,11 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
-    # ========== SELECTOR DE MES/AÑO ==========
+    # Botón para forzar actualización
+    if st.sidebar.button("🔄 Forzar actualización de datos"):
+        forzar_actualizacion()
+        st.success("✅ Datos actualizados")
+    
     st.sidebar.markdown("---")
     st.sidebar.subheader("📅 Seleccionar Mes")
     
@@ -743,7 +776,6 @@ else:
                                             index=mes_actual-1)
     año_seleccionado = st.sidebar.number_input("Año", min_value=2020, max_value=2030, value=año_actual)
     
-    # ========== MODO OSCURO ==========
     st.sidebar.markdown("---")
     modo_oscuro = st.sidebar.toggle("🌙 Modo Oscuro", value=False)
     if modo_oscuro:
@@ -780,7 +812,6 @@ else:
     st.sidebar.markdown("---")
     st.sidebar.info(f"📆 Mostrando datos de {meses[mes_seleccionado-1]} {año_seleccionado}")
     
-    # ========== TABS ==========
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📦 Ingresar Vales", "🔄 Cambiar Vales", "🤖 Distribución Auto", "✏️ Distribución Manual", "💰 Stock Actual", "📜 Historial"])
     
     # ========== TAB 1: INGRESAR VALES ==========
@@ -811,7 +842,7 @@ else:
                     registrar_historial(fecha_ingreso, None, "MANUAL", es_ingreso=True, vales_ingresados=vales_ingreso)
                     st.success(f"✅ Se ingresaron ${total_ingreso:,.0f}")
                     simular_notificacion(f"Ingreso de ${total_ingreso:,.0f} registrado correctamente")
-                    st.rerun()
+                    forzar_actualizacion()
                 else:
                     st.warning("Ingresa al menos un vale")
     
@@ -834,7 +865,7 @@ else:
                     if exito:
                         st.success(mensaje)
                         simular_notificacion(f"Cambio de vales registrado: {mensaje}")
-                        st.rerun()
+                        forzar_actualizacion()
                     else:
                         st.error(mensaje)
     
@@ -874,7 +905,6 @@ else:
                     reparto, stock_nuevo = distribuir_vales_auto(dependencias, stock, miercoles)
                     st.success("✅ Distribución calculada")
                     
-                    # Mostrar gráficos
                     mostrar_graficos(reparto)
                     
                     datos_tabla = []
@@ -882,21 +912,18 @@ else:
                         datos_tabla.append({"Dependencia": ofi["nombre"], "Cuota": f"${ofi['cuota_objetivo']:,.0f}", "Entregado": f"${ofi['total']:,.0f}", "Diferencia": f"${ofi['cuota_objetivo'] - ofi['total']:,.0f}", "$20k": ofi["vales"][0], "$10k": ofi["vales"][1], "$3k": ofi["vales"][2], "$2k": ofi["vales"][3], "$1k": ofi["vales"][4], "$500": ofi["vales"][5], "$100": ofi["vales"][6]})
                     st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
                     
-                    # Reporte descargable
                     descargar_reporte_csv(reparto, fecha_dist.strftime("%Y-%m-%d"))
                     
                     st.session_state.reparto = reparto
                     st.session_state.stock_nuevo = stock_nuevo
                     st.session_state.fecha_dist = fecha_dist
             
-            # Confirmación antes de guardar
             if 'reparto' in st.session_state:
                 with st.container():
                     st.markdown("---")
                     st.subheader("📋 Confirmar Distribución")
                     st.info("Revisa el resumen antes de guardar:")
                     
-                    # Mostrar resumen
                     total_entregado = sum(ofi["total"] for ofi in st.session_state.reparto)
                     total_cuotas = sum(ofi["cuota_objetivo"] for ofi in st.session_state.reparto)
                     
@@ -917,7 +944,7 @@ else:
                             del st.session_state.reparto
                             del st.session_state.stock_nuevo
                             del st.session_state.fecha_dist
-                            st.rerun()
+                            forzar_actualizacion()
     
     # ========== TAB 4: DISTRIBUCIÓN MANUAL ==========
     with tab4:
@@ -967,13 +994,13 @@ else:
                 registrar_historial(date.today(), reparto_manual, "MANUAL")
                 registrar_entrega_detallada(date.today(), reparto_manual, "MANUAL")
                 st.success("Distribución guardada")
-                st.rerun()
+                forzar_actualizacion()
     
     # ========== TAB 5: STOCK ACTUAL ==========
     with tab5:
         st.header("💰 Stock Actual de Vales")
         if st.button("🔄 Refrescar stock"):
-            st.rerun()
+            forzar_actualizacion()
         stock = obtener_stock_actual()
         total_caja = calcular_total_caja(stock)
         stock_display = pd.DataFrame([{"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0), "Total": f"${d * stock.get(d, 0):,.0f}"} for d in DENOMINACIONES])
