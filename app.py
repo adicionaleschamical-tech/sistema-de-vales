@@ -98,29 +98,67 @@ def conectar_gsheets():
     return client.open_by_key(SHEET_ID)
 
 def limpiar_numero(valor):
+    """Limpia y convierte números de diferentes formatos a enteros"""
     if valor is None:
         return 0
     if isinstance(valor, (int, float)):
         return int(valor)
+    
     valor_str = str(valor).strip()
     if not valor_str:
         return 0
-    valor_str = valor_str.replace("$", "").replace("$ ", "")
-    if "," in valor_str and "." in valor_str:
-        valor_str = valor_str.replace(",", "").replace(".", "")
-    elif "," in valor_str:
-        valor_str = valor_str.replace(",", "")
-    elif "." in valor_str:
-        partes = valor_str.split(".")
-        if len(partes) > 2:
-            valor_str = valor_str.replace(".", "")
-        elif len(partes) == 2 and len(partes[1]) <= 1:
-            valor_str = valor_str.replace(".", "")
+    
+    # Eliminar símbolos de moneda y espacios
+    valor_str = valor_str.replace("$", "").replace("$ ", "").replace(" ", "").strip()
+    
     if not valor_str:
         return 0
+    
+    # Manejar diferentes formatos de números
     try:
-        return int(float(valor_str))
-    except:
+        # Si tiene coma y punto
+        if "," in valor_str and "." in valor_str:
+            # Formato chileno/europeo: 1.234.567,89
+            if valor_str.rfind(",") > valor_str.rfind("."):
+                valor_str = valor_str.replace(".", "").replace(",", ".")
+            # Formato americano: 1,234,567.89
+            else:
+                valor_str = valor_str.replace(",", "")
+        
+        # Si solo tiene coma
+        elif "," in valor_str:
+            partes = valor_str.split(",")
+            # Si es decimal (ej: 900,50 o 900,5)
+            if len(partes) == 2 and len(partes[1]) <= 2:
+                valor_str = valor_str.replace(",", ".")
+            # Si es separador de miles (ej: 900,000 o 1,000,000)
+            else:
+                valor_str = valor_str.replace(",", "")
+        
+        # Si solo tiene punto
+        elif "." in valor_str:
+            partes = valor_str.split(".")
+            # Si es decimal (ej: 900.50 o 900.5)
+            if len(partes) == 2 and len(partes[1]) <= 2:
+                valor_str = valor_str.replace(".", ",").replace(",", ".")
+            # Si es separador de miles (ej: 900.000 o 1.000.000)
+            else:
+                valor_str = valor_str.replace(".", "")
+        
+        # Intentar convertir a entero
+        if "." in valor_str:
+            return int(float(valor_str))
+        else:
+            return int(valor_str)
+            
+    except (ValueError, TypeError):
+        # Si falla la conversión, intentar extraer solo números
+        try:
+            numeros = re.findall(r'\d+', str(valor))
+            if numeros:
+                return int(''.join(numeros))
+        except:
+            pass
         return 0
 
 def calcular_total_caja(stock):
