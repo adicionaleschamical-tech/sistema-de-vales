@@ -157,46 +157,58 @@ def limpiar_numero(valor):
     if isinstance(valor, (int, float)):
         return int(valor)
     
-    valor_str = str(valor).strip()
-    if not valor_str:
-        return 0
-    
-    valor_str = valor_str.replace("$", "").replace("$ ", "").replace(" ", "").strip()
-    
-    if not valor_str:
-        return 0
-    
-    try:
-        if "," in valor_str and "." in valor_str:
-            if valor_str.rfind(",") > valor_str.rfind("."):
-                valor_str = valor_str.replace(".", "").replace(",", ".")
-            else:
-                valor_str = valor_str.replace(",", "")
-        elif "," in valor_str:
-            partes = valor_str.split(",")
-            if len(partes) == 2 and len(partes[1]) <= 2:
-                valor_str = valor_str.replace(",", ".")
-            else:
-                valor_str = valor_str.replace(",", "")
-        elif "." in valor_str:
-            partes = valor_str.split(".")
-            if len(partes) == 2 and len(partes[1]) <= 2:
-                pass
-            else:
-                valor_str = valor_str.replace(".", "")
+    # Si es string, limpiar
+    if isinstance(valor, str):
+        valor_str = valor.strip()
+        if not valor_str:
+            return 0
         
-        if "." in valor_str:
-            return int(float(valor_str))
-        else:
-            return int(valor_str)
-            
-    except (ValueError, TypeError):
+        # Eliminar símbolos de moneda y espacios
+        valor_str = valor_str.replace("$", "").replace("$ ", "").replace(" ", "").strip()
+        
+        if not valor_str:
+            return 0
+        
         try:
-            numeros = re.findall(r'\d+', str(valor))
-            if numeros:
-                return int(''.join(numeros))
-        except:
-            pass
+            # Manejar diferentes formatos de números
+            if "," in valor_str and "." in valor_str:
+                if valor_str.rfind(",") > valor_str.rfind("."):
+                    valor_str = valor_str.replace(".", "").replace(",", ".")
+                else:
+                    valor_str = valor_str.replace(",", "")
+            elif "," in valor_str:
+                partes = valor_str.split(",")
+                if len(partes) == 2 and len(partes[1]) <= 2:
+                    valor_str = valor_str.replace(",", ".")
+                else:
+                    valor_str = valor_str.replace(",", "")
+            elif "." in valor_str:
+                partes = valor_str.split(".")
+                if len(partes) == 2 and len(partes[1]) <= 2:
+                    pass
+                else:
+                    valor_str = valor_str.replace(".", "")
+            
+            # Intentar convertir
+            if "." in valor_str:
+                return int(float(valor_str))
+            else:
+                return int(valor_str)
+                
+        except (ValueError, TypeError):
+            # Si falla, intentar extraer solo números
+            try:
+                numeros = re.findall(r'\d+', valor_str)
+                if numeros:
+                    return int(''.join(numeros))
+            except:
+                pass
+            return 0
+    
+    # Si es otro tipo, intentar convertir
+    try:
+        return int(float(valor))
+    except:
         return 0
 
 def calcular_total_caja(stock):
@@ -290,11 +302,32 @@ def obtener_detalle_entregas_cached():
         try:
             detalle_ws = sheet.worksheet("detalle_entregas")
             datos = detalle_ws.get_all_records()
+            
+            # Limpiar datos - convertir strings a números donde sea posible
+            if datos and len(datos) > 0:
+                # Identificar columnas numéricas
+                columnas_numericas = ["cuota_objetivo", "total_entregado"]
+                for d in DENOMINACIONES:
+                    columnas_numericas.append(f"vale_{d}")
+                
+                for fila in datos:
+                    for col in columnas_numericas:
+                        if col in fila and fila[col] is not None:
+                            try:
+                                # Intentar convertir a float
+                                if isinstance(fila[col], str):
+                                    fila[col] = limpiar_numero(fila[col])
+                                else:
+                                    fila[col] = float(fila[col])
+                            except:
+                                fila[col] = 0
+            
             return datos
-        except:
+        except Exception as e:
+            st.warning(f"No se pudo acceder a la hoja detalle_entregas: {e}")
             return []
     except Exception as e:
-        st.error(f"Error al leer detalle de entregas: {e}")
+        st.warning(f"Error al leer detalle de entregas: {e}")
         return []
 
 def obtener_detalle_entregas():
@@ -607,32 +640,48 @@ def simular_notificacion(mensaje):
     st.success(f"📧 {mensaje}")
 
 def mostrar_historial_detallado():
+    """Muestra el historial detallado por dependencia"""
     st.header("📜 Historial Detallado por Dependencia")
     
-    detalle = obtener_detalle_entregas()
+    try:
+        detalle = obtener_detalle_entregas()
+    except Exception as e:
+        st.error(f"Error al cargar el historial: {e}")
+        return
     
     if not detalle:
         st.info("No hay registros de entregas detalladas")
         return
     
+    # Convertir a DataFrame y limpiar datos
     df_detalle = pd.DataFrame(detalle)
     
-    if "fecha" not in df_detalle.columns:
-        st.warning("El formato del historial no es el esperado")
+    # Verificar que tiene los datos esperados
+    if df_detalle.empty:
+        st.info("No hay registros de entregas detalladas")
         return
     
-    try:
-        df_detalle["fecha"] = pd.to_datetime(df_detalle["fecha"])
-    except:
-        pass
+    # Asegurar que las columnas numéricas sean float/int
+    columnas_numericas = ["cuota_objetivo", "total_entregado"] + [f"vale_{d}" for d in DENOMINACIONES]
+    for col in columnas_numericas:
+        if col in df_detalle.columns:
+            df_detalle[col] = pd.to_numeric(df_detalle[col], errors='coerce').fillna(0)
     
+    # Convertir fecha
+    if "fecha" in df_detalle.columns:
+        try:
+            df_detalle["fecha"] = pd.to_datetime(df_detalle["fecha"])
+        except:
+            pass
+    
+    # Filtros
     col1, col2 = st.columns(2)
     with col1:
         if not df_detalle.empty and "fecha" in df_detalle.columns:
             fechas_disponibles = sorted(df_detalle["fecha"].unique(), reverse=True)
             fecha_seleccionada = st.selectbox(
                 "📅 Filtrar por fecha",
-                options=["Todas"] + [str(f) for f in fechas_disponibles[:20]]
+                options=["Todas"] + [str(f.date()) for f in fechas_disponibles[:20]]
             )
     with col2:
         if not df_detalle.empty and "dependencia_nombre" in df_detalle.columns:
@@ -642,9 +691,10 @@ def mostrar_historial_detallado():
                 options=["Todas"] + dependencias_uniq
             )
     
+    # Aplicar filtros
     df_filtrado = df_detalle.copy()
     if fecha_seleccionada and fecha_seleccionada != "Todas":
-        df_filtrado = df_filtrado[df_filtrado["fecha"].astype(str) == fecha_seleccionada]
+        df_filtrado = df_filtrado[df_filtrado["fecha"].astype(str).str.contains(fecha_seleccionada)]
     if dep_seleccionada and dep_seleccionada != "Todas":
         df_filtrado = df_filtrado[df_filtrado["dependencia_nombre"] == dep_seleccionada]
     
@@ -652,10 +702,12 @@ def mostrar_historial_detallado():
         st.info("No hay registros con los filtros seleccionados")
         return
     
+    # Mostrar resumen - Asegurar que los valores son numéricos
     st.subheader("📊 Resumen de la Distribución")
     
-    total_general = df_filtrado["total_entregado"].sum() if "total_entregado" in df_filtrado.columns else 0
-    total_cuotas = df_filtrado["cuota_objetivo"].sum() if "cuota_objetivo" in df_filtrado.columns else 0
+    # Calcular totales de forma segura
+    total_general = float(df_filtrado["total_entregado"].sum()) if "total_entregado" in df_filtrado.columns else 0
+    total_cuotas = float(df_filtrado["cuota_objetivo"].sum()) if "cuota_objetivo" in df_filtrado.columns else 0
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -665,52 +717,88 @@ def mostrar_historial_detallado():
     with col3:
         st.metric("📈 Diferencia", f"${total_cuotas - total_general:,.0f}")
     
+    # Mostrar tabla detallada
     st.subheader("📋 Detalle por Dependencia")
     
+    # Seleccionar columnas a mostrar
     columnas_mostrar = ["fecha", "dependencia_nombre", "cuota_objetivo", "total_entregado", "tipo"]
     for denom in DENOMINACIONES:
         col_name = f"vale_{denom}"
         if col_name in df_filtrado.columns:
             columnas_mostrar.append(col_name)
     
+    # Filtrar columnas existentes
     columnas_existentes = [col for col in columnas_mostrar if col in df_filtrado.columns]
     df_mostrar = df_filtrado[columnas_existentes].copy()
     
+    # Formatear números de forma segura
     for col in df_mostrar.columns:
         if col not in ["fecha", "dependencia_nombre", "tipo"]:
-            df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${x:,.0f}" if pd.notnull(x) else "$0")
+            try:
+                df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${float(x):,.0f}" if pd.notnull(x) and x != 0 else "$0")
+            except:
+                df_mostrar[col] = df_mostrar[col].apply(lambda x: "$0")
     
+    # Mostrar tabla con scroll
     st.dataframe(df_mostrar, use_container_width=True, height=400)
     
-    if st.button("📥 Descargar historial filtrado (CSV)"):
-        try:
-            csv = df_filtrado.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-            b64 = base64.b64encode(csv).decode()
-            href = f'<a href="data:file/csv;base64,{b64}" download="historial_detallado.csv">⬇️ Descargar CSV</a>'
-            st.markdown(href, unsafe_allow_html=True)
-        except Exception as e:
-            st.error(f"Error al descargar: {e}")
+    # Opción para descargar el historial filtrado
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📥 Descargar historial filtrado (CSV)"):
+            try:
+                # Crear copia para descarga con números sin formato
+                df_descarga = df_filtrado.copy()
+                csv = df_descarga.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                b64 = base64.b64encode(csv).decode()
+                href = f'<a href="data:file/csv;base64,{b64}" download="historial_detallado.csv">⬇️ Descargar CSV</a>'
+                st.markdown(href, unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Error al descargar: {e}")
     
-    if len(df_filtrado) > 0 and "dependencia_nombre" in df_filtrado.columns and "total_entregado" in df_filtrado.columns:
-        try:
-            import plotly.express as px
-            
-            st.subheader("📈 Gráfico de Distribución por Dependencia")
-            
-            if len(df_filtrado) > 1:
-                df_agrupado = df_filtrado.groupby("dependencia_nombre")[["total_entregado", "cuota_objetivo"]].sum().reset_index()
+    with col2:
+        if st.button("📊 Ver gráfico de distribución"):
+            try:
+                import plotly.express as px
                 
-                fig = px.bar(
-                    df_agrupado,
-                    x="dependencia_nombre",
-                    y=["total_entregado", "cuota_objetivo"],
-                    title="Total por Dependencia",
-                    barmode="group",
-                    color_discrete_sequence=["#667eea", "#38ef7d"]
-                )
-                st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.info(f"No se pudo generar el gráfico: {e}")
+                if len(df_filtrado) > 0 and "dependencia_nombre" in df_filtrado.columns and "total_entregado" in df_filtrado.columns:
+                    # Agrupar por dependencia
+                    df_agrupado = df_filtrado.groupby("dependencia_nombre").agg({
+                        "total_entregado": "sum",
+                        "cuota_objetivo": "sum"
+                    }).reset_index()
+                    
+                    # Asegurar valores numéricos
+                    df_agrupado["total_entregado"] = pd.to_numeric(df_agrupado["total_entregado"], errors='coerce').fillna(0)
+                    df_agrupado["cuota_objetivo"] = pd.to_numeric(df_agrupado["cuota_objetivo"], errors='coerce').fillna(0)
+                    
+                    if not df_agrupado.empty:
+                        fig = px.bar(
+                            df_agrupado,
+                            x="dependencia_nombre",
+                            y=["total_entregado", "cuota_objetivo"],
+                            title="Total por Dependencia",
+                            barmode="group",
+                            color_discrete_sequence=["#667eea", "#38ef7d"],
+                            labels={
+                                "dependencia_nombre": "Dependencia",
+                                "value": "Monto ($)",
+                                "variable": "Métrica"
+                            }
+                        )
+                        fig.update_layout(
+                            xaxis_tickangle=-45,
+                            yaxis_title="Monto ($)"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.warning("No hay suficientes datos para generar el gráfico")
+                else:
+                    st.warning("No hay datos suficientes para generar el gráfico")
+            except ImportError:
+                st.info("📊 Instala plotly para ver gráficos: pip install plotly")
+            except Exception as e:
+                st.error(f"Error al generar gráfico: {e}")
 
 # ============================================
 # FUNCIÓN PARA FORZAR ACTUALIZACIÓN DE CACHÉ
