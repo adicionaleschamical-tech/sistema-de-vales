@@ -99,6 +99,22 @@ def aplicar_estilo():
             margin: 5px 0;
             border-left: 4px solid #667eea;
         }
+        .diagnostico-box {
+            background-color: #f0f0f0;
+            border: 2px solid #ffc107;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        .diagnostico-box h4 {
+            color: #856404;
+        }
+        .diagnostico-box .dato {
+            font-family: monospace;
+            background-color: #e9ecef;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -345,13 +361,16 @@ def registrar_cambio_historial(desde_denom, desde_cant, hasta_denom, hasta_cant)
         return False
 
 def registrar_entrega_detallada(fecha, reparto, tipo):
+    """Registra el detalle en la hoja detalle_entregas con el orden correcto de columnas"""
     try:
         sheet = conectar_gsheets()
         try:
             detalle_ws = sheet.worksheet("detalle_entregas")
         except:
             detalle_ws = sheet.add_worksheet(title="detalle_entregas", rows="1000", cols="15")
-            encabezados = ["fecha", "dependencia_id", "dependencia_nombre", "cuota_objetivo", "total_entregado", "tipo"]
+            # ORDEN CORRECTO DE COLUMNAS SEGÚN EL SHEET
+            encabezados = ["fecha", "dependencia_id", "dependencia_nombre", "cuota_objetivo", "total_entregado"]
+            # Los vales en orden: 20000, 10000, 3000, 2000, 1000, 500, 100
             for d in DENOMINACIONES:
                 encabezados.append(f"vale_{d}")
             detalle_ws.append_row(encabezados)
@@ -362,14 +381,15 @@ def registrar_entrega_detallada(fecha, reparto, tipo):
             for i, denom in enumerate(DENOMINACIONES):
                 total_calculado += ofi["vales"][i] * denom
             
+            # CORREGIDO: El orden exacto según los encabezados del sheet
             nueva_fila = [
-                str(fecha), 
-                ofi.get("id", 0), 
-                ofi["nombre"], 
-                float(ofi.get("cuota_objetivo", 0)), 
-                float(total_calculado),
-                tipo
+                str(fecha),                          # fecha
+                ofi.get("id", 0),                    # dependencia_id
+                ofi["nombre"],                       # dependencia_nombre
+                float(ofi.get("cuota_objetivo", 0)), # cuota_objetivo
+                float(total_calculado),              # total_entregado
             ]
+            # Agregar los vales en el orden DENOMINACIONES: 20000, 10000, 3000, 2000, 1000, 500, 100
             for j, denom in enumerate(DENOMINACIONES):
                 nueva_fila.append(int(ofi["vales"][j]))
             detalle_ws.append_row(nueva_fila)
@@ -677,8 +697,33 @@ def simular_notificacion(mensaje):
     st.success(f"📧 {mensaje}")
 
 def mostrar_historial_detallado():
-    """Muestra el historial detallado por dependencia - Calcula el total desde los vales"""
+    """Muestra el historial detallado por dependencia - CON DIAGNÓSTICO"""
     st.header("📜 Historial de Distribución - Planilla de Separación")
+    
+    # ========== DIAGNÓSTICO - Mostrar de dónde viene la información ==========
+    with st.expander("🔍 DIAGNÓSTICO - ¿De dónde viene la información?", expanded=False):
+        st.markdown("""
+        <div class="diagnostico-box">
+            <h4>📊 ORIGEN DE LOS DATOS</h4>
+            <p>Los datos del historial se leen de la hoja de Google Sheets: <strong>detalle_entregas</strong></p>
+            <p><strong>Orden de columnas en el sheet:</strong></p>
+            <code>fecha | dependencia_id | dependencia_nombre | cuota_objetivo | total_entregado | vale_20000 | vale_10000 | vale_3000 | vale_2000 | vale_1000 | vale_500 | vale_100</code>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        try:
+            sheet = conectar_gsheets()
+            detalle_ws = sheet.worksheet("detalle_entregas")
+            
+            # Leer todos los datos crudos
+            todos_los_datos = detalle_ws.get_all_values()
+            st.write("**📄 Datos crudos de la hoja:**")
+            if todos_los_datos:
+                st.write("**Encabezados:**", todos_los_datos[0] if todos_los_datos else "Sin encabezados")
+                st.dataframe(pd.DataFrame(todos_los_datos[1:6]), use_container_width=True)
+                st.write(f"Total de filas en la hoja: {len(todos_los_datos)}")
+        except Exception as e:
+            st.error(f"Error en diagnóstico: {e}")
     
     try:
         detalle = obtener_detalle_entregas()
@@ -695,6 +740,20 @@ def mostrar_historial_detallado():
     if df_detalle.empty:
         st.info("No hay registros de entregas detalladas")
         return
+    
+    # ========== DIAGNÓSTICO 2 ==========
+    with st.expander("🔍 DIAGNÓSTICO - Datos cargados en DataFrame", expanded=False):
+        st.write("**DataFrame completo:**")
+        st.dataframe(df_detalle, use_container_width=True)
+        
+        st.write("**Columnas del DataFrame:**")
+        st.write(list(df_detalle.columns))
+        
+        if not df_detalle.empty:
+            st.write("**Ejemplo de una fila (índice 0):**")
+            fila_ejemplo = df_detalle.iloc[0].to_dict()
+            for key, value in fila_ejemplo.items():
+                st.write(f"  {key}: {value}")
     
     # Asegurar que las columnas numéricas sean float/int
     columnas_numericas = ["cuota_objetivo", "total_entregado"]
@@ -730,6 +789,7 @@ def mostrar_historial_detallado():
     
     with col2:
         mostrar_planilla = st.checkbox("📋 Mostrar como planilla de separación", value=True)
+        mostrar_diagnostico = st.checkbox("🔍 Mostrar diagnóstico detallado", value=False)
     
     # Aplicar filtros
     df_filtrado = df_detalle.copy()
@@ -740,6 +800,13 @@ def mostrar_historial_detallado():
         st.info("No hay registros con los filtros seleccionados")
         return
     
+    # ========== DIAGNÓSTICO 3 ==========
+    if mostrar_diagnostico:
+        with st.expander("🔍 DIAGNÓSTICO - Datos filtrados", expanded=True):
+            st.write("**Datos después del filtro de fecha:**")
+            st.dataframe(df_filtrado, use_container_width=True)
+            st.write(f"Total de registros filtrados: {len(df_filtrado)}")
+    
     # Para una fecha específica, mostrar los datos tal como están
     if fecha_seleccionada != "Todas":
         df_mostrar = df_filtrado.copy()
@@ -748,8 +815,6 @@ def mostrar_historial_detallado():
         columnas_agrupacion = []
         if "dependencia_nombre" in df_filtrado.columns:
             columnas_agrupacion.append("dependencia_nombre")
-        if "dependencia_id" in df_filtrado.columns:
-            columnas_agrupacion.append("dependencia_id")
         
         if columnas_agrupacion:
             agg_dict = {}
@@ -757,6 +822,8 @@ def mostrar_historial_detallado():
                 agg_dict["fecha"] = "first"
             if "cuota_objetivo" in df_filtrado.columns:
                 agg_dict["cuota_objetivo"] = "first"
+            if "total_entregado" in df_filtrado.columns:
+                agg_dict["total_entregado"] = "sum"
             if "tipo" in df_filtrado.columns:
                 agg_dict["tipo"] = "first"
             
@@ -773,6 +840,13 @@ def mostrar_historial_detallado():
         else:
             df_mostrar = df_filtrado
     
+    # ========== DIAGNÓSTICO 4 ==========
+    if mostrar_diagnostico:
+        with st.expander("🔍 DIAGNÓSTICO - Datos a mostrar", expanded=True):
+            st.write("**Datos después del agrupamiento:**")
+            st.dataframe(df_mostrar, use_container_width=True)
+            st.write(f"Total de registros a mostrar: {len(df_mostrar)}")
+    
     # Calcular el total a partir de los vales para CADA registro
     for idx, row in df_mostrar.iterrows():
         total_calculado = 0
@@ -782,6 +856,26 @@ def mostrar_historial_detallado():
                 cantidad = int(row[col_name]) if pd.notnull(row[col_name]) else 0
                 total_calculado += cantidad * denom
         df_mostrar.at[idx, "total_vales_calculado"] = total_calculado
+    
+    # ========== DIAGNÓSTICO 5 ==========
+    if mostrar_diagnostico:
+        with st.expander("🔍 DIAGNÓSTICO - Comparación de totales", expanded=True):
+            st.write("**Comparación entre total_entregado guardado y calculado desde vales:**")
+            comparacion = []
+            for idx, row in df_mostrar.iterrows():
+                nombre = row.get('dependencia_nombre', 'Sin nombre')
+                total_guardado = row.get('total_entregado', 0)
+                total_calculado = row.get('total_vales_calculado', 0)
+                diferencia = total_guardado - total_calculado
+                estado = "✅ Coincide" if abs(diferencia) <= 100 else f"❌ Diferencia: ${diferencia:,.0f}"
+                comparacion.append({
+                    "Dependencia": nombre,
+                    "Total Guardado": f"${total_guardado:,.0f}",
+                    "Total Calculado": f"${total_calculado:,.0f}",
+                    "Diferencia": f"${diferencia:,.0f}",
+                    "Estado": estado
+                })
+            st.dataframe(pd.DataFrame(comparacion), use_container_width=True)
     
     if mostrar_planilla:
         st.markdown("---")
@@ -1018,6 +1112,18 @@ else:
                 border-bottom-color: #2d2d2d;
             }
             .planilla-separacion .dependencia-item {
+                background-color: #1a1a2e;
+                color: #ffffff;
+            }
+            .diagnostico-box {
+                background-color: #2d2d2d;
+                border-color: #ffc107;
+                color: #ffffff;
+            }
+            .diagnostico-box h4 {
+                color: #ffc107;
+            }
+            .diagnostico-box .dato {
                 background-color: #1a1a2e;
                 color: #ffffff;
             }
