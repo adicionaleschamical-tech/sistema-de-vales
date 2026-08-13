@@ -110,18 +110,6 @@ def aplicar_estilo():
             color: #dc3545;
             font-weight: bold;
         }
-        .cumplimiento-bueno {
-            color: #28a745;
-            font-weight: bold;
-        }
-        .cumplimiento-regular {
-            color: #ffc107;
-            font-weight: bold;
-        }
-        .cumplimiento-malo {
-            color: #dc3545;
-            font-weight: bold;
-        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -381,12 +369,17 @@ def registrar_entrega_detallada(fecha, reparto, tipo):
             detalle_ws.append_row(encabezados)
         
         for ofi in reparto:
+            # Calcular el total a partir de los vales
+            total_calculado = 0
+            for i, denom in enumerate(DENOMINACIONES):
+                total_calculado += ofi["vales"][i] * denom
+            
             nueva_fila = [
                 str(fecha), 
                 ofi.get("id", 0), 
                 ofi["nombre"], 
                 float(ofi.get("cuota_objetivo", 0)), 
-                float(ofi["total"]),
+                float(total_calculado),
                 tipo
             ]
             for j, denom in enumerate(DENOMINACIONES):
@@ -401,9 +394,10 @@ def registrar_entrega_detallada(fecha, reparto, tipo):
         return False
 
 def distribuir_vales_auto(dependencias, stock_actual, miercoles):
-    """Distribuye vales automáticamente de forma equitativa"""
+    """Distribuye vales automáticamente usando SOLO los vales disponibles en stock"""
     reparto = []
     
+    # Calcular cuota semanal para cada dependencia
     for dep in dependencias:
         cuota_semanal = dep["monto_mensual"] / miercoles
         reparto.append({
@@ -416,53 +410,93 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
             "porcentaje_cumplido": 0
         })
     
+    # Crear una copia del stock para ir descontando
     stock = stock_actual.copy()
     
-    total_cuotas = sum(ofi["cuota_objetivo"] for ofi in reparto)
+    # Verificar qué vales están realmente disponibles
+    vales_disponibles = {denom: cantidad for denom, cantidad in stock.items() if cantidad > 0}
+    
+    if not vales_disponibles:
+        st.error("❌ No hay vales disponibles en stock")
+        return reparto, stock
+    
+    # Calcular total disponible en vales
     total_stock = sum(denom * cantidad for denom, cantidad in stock.items())
+    total_cuotas = sum(ofi["cuota_objetivo"] for ofi in reparto)
+    
+    # Si no hay suficiente stock, ajustar proporcionalmente
     factor_ajuste = min(1.0, total_stock / total_cuotas) if total_cuotas > 0 else 0
     
+    # Función para distribuir vales de una denominación específica
     def distribuir_denominacion(valor_vale, cantidad_disponible, deudores):
+        """Distribuye una denominación específica entre los deudores usando SOLO vales disponibles"""
         if cantidad_disponible <= 0 or not deudores:
             return
         
+        # Calcular cuántos vales necesita cada deudor
         necesidades = []
         for ofi in deudores:
-            deuda = ofi["cuota_objetivo"] * factor_ajuste - ofi["total"]
+            # Calcular la deuda ajustada por el factor
+            deuda = (ofi["cuota_objetivo"] * factor_ajuste) - ofi["total"]
             if deuda > 0:
+                # Cuántos vales de esta denominación necesita
                 vales_necesarios = int(deuda // valor_vale)
                 if vales_necesarios > 0:
                     necesidades.append({
                         "ofi": ofi,
                         "vales_necesarios": vales_necesarios,
-                        "deuda": deuda
+                        "deuda": deuda,
+                        "prioridad": deuda / valor_vale
                     })
         
         if not necesidades:
             return
         
+        # Ordenar por deuda mayor (priorizar a los que más deben)
         necesidades.sort(key=lambda x: x["deuda"], reverse=True)
         
+        # Distribuir los vales disponibles de manera equitativa
         vales_restantes = cantidad_disponible
+        
+        # Primera pasada: dar al menos 1 vale a cada deudor si es posible
         for necesidad in necesidades:
             if vales_restantes <= 0:
                 break
-            
-            vales_a_dar = min(necesidad["vales_necesarios"], vales_restantes)
-            if vales_a_dar > 0:
-                ofi = necesidad["ofi"]
-                idx = DENOMINACIONES.index(valor_vale)
-                ofi["vales"][idx] += vales_a_dar
-                ofi["total"] += vales_a_dar * valor_vale
-                vales_restantes -= vales_a_dar
+            if necesidad["vales_necesarios"] > 0:
+                vales_a_dar = 1
+                if vales_a_dar > 0:
+                    ofi = necesidad["ofi"]
+                    idx = DENOMINACIONES.index(valor_vale)
+                    ofi["vales"][idx] += vales_a_dar
+                    ofi["total"] += vales_a_dar * valor_vale
+                    vales_restantes -= vales_a_dar
         
+        # Segunda pasada: distribuir el resto de vales
+        if vales_restantes > 0:
+            necesidades.sort(key=lambda x: x["deuda"], reverse=True)
+            
+            for necesidad in necesidades:
+                if vales_restantes <= 0:
+                    break
+                
+                vales_adicionales = min(necesidad["vales_necesarios"] - 1, vales_restantes)
+                if vales_adicionales > 0:
+                    ofi = necesidad["ofi"]
+                    idx = DENOMINACIONES.index(valor_vale)
+                    ofi["vales"][idx] += vales_adicionales
+                    ofi["total"] += vales_adicionales * valor_vale
+                    vales_restantes -= vales_adicionales
+        
+        # Actualizar el stock con los vales restantes
         stock[valor_vale] = vales_restantes
     
+    # Distribuir vales grandes primero
     for valor_vale in DENOMINACIONES:
         cantidad_disponible = stock[valor_vale]
         if cantidad_disponible <= 0:
             continue
         
+        # Identificar quiénes aún necesitan vales
         deudores = [
             ofi for ofi in reparto 
             if ofi["total"] < ofi["cuota_objetivo"] * factor_ajuste
@@ -473,6 +507,7 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
         
         distribuir_denominacion(valor_vale, cantidad_disponible, deudores)
     
+    # Si aún sobran vales de denominaciones más pequeñas, distribuirlos
     for valor_vale in reversed(DENOMINACIONES):
         cantidad_disponible = stock[valor_vale]
         if cantidad_disponible <= 0:
@@ -488,6 +523,7 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
         
         distribuir_denominacion(valor_vale, cantidad_disponible, deudores)
     
+    # Calcular diferencias y porcentajes
     for ofi in reparto:
         ofi["diferencia"] = ofi["cuota_objetivo"] - ofi["total"]
         ofi["porcentaje_cumplido"] = (ofi["total"] / ofi["cuota_objetivo"] * 100) if ofi["cuota_objetivo"] > 0 else 0
@@ -495,22 +531,32 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
     return reparto, stock
 
 def validar_distribucion(reparto, stock_inicial, stock_final):
+    """Valida que la distribución sea correcta"""
+    # Verificar que el stock final no sea negativo
     for denom, cantidad in stock_final.items():
         if cantidad < 0:
             return False, f"Stock negativo para ${denom}: {cantidad}"
+    
+    # Calcular total entregado a partir de los vales
+    total_entregado_vales = 0
+    for ofi in reparto:
+        for i, denom in enumerate(DENOMINACIONES):
+            total_entregado_vales += ofi["vales"][i] * denom
     
     total_entregado = sum(ofi["total"] for ofi in reparto)
     total_stock_inicial = sum(denom * cantidad for denom, cantidad in stock_inicial.items())
     total_stock_final = sum(denom * cantidad for denom, cantidad in stock_final.items())
     
+    # Verificar que el total entregado (desde vales) coincida con el total_entregado
     tolerancia = 100
+    if abs(total_entregado_vales - total_entregado) > tolerancia:
+        return False, f"Total en vales (${total_entregado_vales:,.0f}) no coincide con total entregado (${total_entregado:,.0f})"
     
+    # Verificar que no exceda el stock
     if total_entregado > total_stock_inicial + tolerancia:
         return False, f"Total entregado (${total_entregado:,.0f}) excede stock inicial (${total_stock_inicial:,.0f})"
     
-    if abs((total_stock_inicial - total_stock_final) - total_entregado) > tolerancia:
-        return False, f"Diferencia de stock no coincide con entregado"
-    
+    # Verificar que todas las dependencias tengan al menos algo
     for ofi in reparto:
         if ofi["total"] <= 0 and ofi["cuota_objetivo"] > 0:
             return False, f"La dependencia {ofi['nombre']} no recibió vales"
@@ -732,12 +778,15 @@ def mostrar_historial_detallado():
                 "📅 Seleccionar fecha de distribución",
                 options=["Todas"] + [str(f.date()) for f in fechas_disponibles]
             )
+        else:
+            fecha_seleccionada = "Todas"
+    
     with col2:
         mostrar_planilla = st.checkbox("📋 Mostrar como planilla de separación", value=True)
     
     # Aplicar filtros
     df_filtrado = df_detalle.copy()
-    if fecha_seleccionada and fecha_seleccionada != "Todas":
+    if fecha_seleccionada and fecha_seleccionada != "Todas" and "fecha" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["fecha"].astype(str).str.contains(fecha_seleccionada)]
     
     if df_filtrado.empty:
@@ -907,7 +956,6 @@ def mostrar_historial_detallado():
         if "tipo" in df_mostrar.columns:
             columnas_mostrar.append("tipo")
         
-        # Agregar columnas de vales
         for denom in DENOMINACIONES:
             col_name = f"vale_{denom}"
             if col_name in df_mostrar.columns:
@@ -916,7 +964,6 @@ def mostrar_historial_detallado():
         if "total_vales_calculado" in df_mostrar.columns:
             columnas_mostrar.append("total_vales_calculado")
         
-        # Filtrar columnas existentes
         columnas_existentes = [col for col in columnas_mostrar if col in df_mostrar.columns]
         df_tabla = df_mostrar[columnas_existentes].copy()
         
