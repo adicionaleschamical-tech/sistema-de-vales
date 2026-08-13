@@ -131,18 +131,6 @@ def aplicar_estilo():
             padding: 15px;
             margin: 10px 0;
         }
-        .diferencia-positiva {
-            color: #28a745;
-            font-weight: bold;
-        }
-        .diferencia-negativa {
-            color: #dc3545;
-            font-weight: bold;
-        }
-        .diferencia-cero {
-            color: #ffc107;
-            font-weight: bold;
-        }
         .cumplimiento-bueno {
             color: #28a745;
             font-weight: bold;
@@ -154,6 +142,28 @@ def aplicar_estilo():
         .cumplimiento-malo {
             color: #dc3545;
             font-weight: bold;
+        }
+        .planilla-separacion {
+            background-color: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        .planilla-separacion h3 {
+            color: #495057;
+            border-bottom: 2px solid #dee2e6;
+            padding-bottom: 10px;
+        }
+        .planilla-separacion .dependencia-item {
+            background-color: white;
+            border-radius: 5px;
+            padding: 10px;
+            margin: 5px 0;
+            border-left: 4px solid #667eea;
+        }
+        .planilla-separacion .dependencia-item strong {
+            color: #2c3e50;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -170,7 +180,7 @@ def conectar_gsheets():
             return client.open_by_key(SHEET_ID)
         except Exception as e:
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Backoff exponencial
+                time.sleep(2 ** attempt)
             else:
                 raise e
 
@@ -181,20 +191,17 @@ def limpiar_numero(valor):
     if isinstance(valor, (int, float)):
         return int(valor)
     
-    # Si es string, limpiar
     if isinstance(valor, str):
         valor_str = valor.strip()
         if not valor_str:
             return 0
         
-        # Eliminar símbolos de moneda y espacios
         valor_str = valor_str.replace("$", "").replace("$ ", "").replace(" ", "").strip()
         
         if not valor_str:
             return 0
         
         try:
-            # Manejar diferentes formatos de números
             if "," in valor_str and "." in valor_str:
                 if valor_str.rfind(",") > valor_str.rfind("."):
                     valor_str = valor_str.replace(".", "").replace(",", ".")
@@ -213,14 +220,12 @@ def limpiar_numero(valor):
                 else:
                     valor_str = valor_str.replace(".", "")
             
-            # Intentar convertir
             if "." in valor_str:
                 return int(float(valor_str))
             else:
                 return int(valor_str)
                 
         except (ValueError, TypeError):
-            # Si falla, intentar extraer solo números
             try:
                 numeros = re.findall(r'\d+', valor_str)
                 if numeros:
@@ -229,7 +234,6 @@ def limpiar_numero(valor):
                 pass
             return 0
     
-    # Si es otro tipo, intentar convertir
     try:
         return int(float(valor))
     except:
@@ -263,7 +267,6 @@ def contar_miercoles(anio, mes):
 
 @st.cache_data(ttl=60)
 def obtener_dependencias_cached(anio, mes):
-    """Versión cacheada de obtener_dependencias"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("dependencias")
@@ -294,7 +297,6 @@ def obtener_dependencias(anio=None, mes=None):
 
 @st.cache_data(ttl=30)
 def obtener_stock_cached():
-    """Versión cacheada de obtener_stock_actual"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
@@ -320,16 +322,13 @@ def obtener_stock_actual():
 
 @st.cache_data(ttl=60)
 def obtener_detalle_entregas_cached():
-    """Versión cacheada de obtener_detalle_entregas"""
     try:
         sheet = conectar_gsheets()
         try:
             detalle_ws = sheet.worksheet("detalle_entregas")
             datos = detalle_ws.get_all_records()
             
-            # Limpiar datos - convertir strings a números donde sea posible
             if datos and len(datos) > 0:
-                # Identificar columnas numéricas
                 columnas_numericas = ["cuota_objetivo", "total_entregado"]
                 for d in DENOMINACIONES:
                     columnas_numericas.append(f"vale_{d}")
@@ -338,7 +337,6 @@ def obtener_detalle_entregas_cached():
                     for col in columnas_numericas:
                         if col in fila and fila[col] is not None:
                             try:
-                                # Intentar convertir a float
                                 if isinstance(fila[col], str):
                                     fila[col] = limpiar_numero(fila[col])
                                 else:
@@ -358,25 +356,21 @@ def obtener_detalle_entregas():
     return obtener_detalle_entregas_cached()
 
 def actualizar_stock(stock_nuevo):
-    """Actualiza el stock en Google Sheets"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
         
-        # Verificar que no haya cantidades negativas
         for denom, cantidad in stock_nuevo.items():
             if cantidad < 0:
                 st.error(f"Error: Stock negativo para ${denom}: {cantidad}")
                 return False
         
-        # Actualizar cada denominación
         for denom, cantidad in stock_nuevo.items():
             cell = ws.find(str(denom))
             if cell:
                 ws.update_cell(cell.row, 2, cantidad)
-                time.sleep(0.5)  # Pausa para evitar límites de API
+                time.sleep(0.5)
         
-        # Limpiar caché después de actualizar
         st.cache_data.clear()
         return True
     except Exception as e:
@@ -444,7 +438,6 @@ def registrar_entrega_detallada(fecha, reparto, tipo):
             detalle_ws.append_row(nueva_fila)
             time.sleep(0.3)
         
-        # Limpiar caché después de registrar
         st.cache_data.clear()
         return True
     except Exception as e:
@@ -455,7 +448,6 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
     """Distribuye vales automáticamente de forma equitativa"""
     reparto = []
     
-    # Calcular cuota semanal para cada dependencia
     for dep in dependencias:
         cuota_semanal = dep["monto_mensual"] / miercoles
         reparto.append({
@@ -470,20 +462,14 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
     
     stock = stock_actual.copy()
     
-    # Calcular total a distribuir
     total_cuotas = sum(ofi["cuota_objetivo"] for ofi in reparto)
     total_stock = sum(denom * cantidad for denom, cantidad in stock.items())
-    
-    # Si no hay suficiente stock, ajustar proporcionalmente
     factor_ajuste = min(1.0, total_stock / total_cuotas) if total_cuotas > 0 else 0
     
-    # Función para distribuir vales de una denominación específica
     def distribuir_denominacion(valor_vale, cantidad_disponible, deudores):
-        """Distribuye una denominación específica entre los deudores"""
         if cantidad_disponible <= 0 or not deudores:
             return
         
-        # Calcular cuántos vales necesita cada deudor
         necesidades = []
         for ofi in deudores:
             deuda = ofi["cuota_objetivo"] * factor_ajuste - ofi["total"]
@@ -499,35 +485,28 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
         if not necesidades:
             return
         
-        # Ordenar por deuda mayor (priorizar a los que más deben)
         necesidades.sort(key=lambda x: x["deuda"], reverse=True)
         
-        # Distribuir los vales disponibles
         vales_restantes = cantidad_disponible
         for necesidad in necesidades:
             if vales_restantes <= 0:
                 break
             
-            # Dar la cantidad necesaria o lo que quede
             vales_a_dar = min(necesidad["vales_necesarios"], vales_restantes)
             if vales_a_dar > 0:
                 ofi = necesidad["ofi"]
-                # Encontrar el índice de la denominación
                 idx = DENOMINACIONES.index(valor_vale)
                 ofi["vales"][idx] += vales_a_dar
                 ofi["total"] += vales_a_dar * valor_vale
                 vales_restantes -= vales_a_dar
         
-        # Actualizar stock
         stock[valor_vale] = vales_restantes
     
-    # Primera pasada: distribuir los vales más grandes primero
     for valor_vale in DENOMINACIONES:
         cantidad_disponible = stock[valor_vale]
         if cantidad_disponible <= 0:
             continue
         
-        # Identificar quiénes aún necesitan vales
         deudores = [
             ofi for ofi in reparto 
             if ofi["total"] < ofi["cuota_objetivo"] * factor_ajuste
@@ -538,7 +517,6 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
         
         distribuir_denominacion(valor_vale, cantidad_disponible, deudores)
     
-    # Segunda pasada: ajustar con los vales más pequeños si sobraron
     for valor_vale in reversed(DENOMINACIONES):
         cantidad_disponible = stock[valor_vale]
         if cantidad_disponible <= 0:
@@ -554,7 +532,6 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
         
         distribuir_denominacion(valor_vale, cantidad_disponible, deudores)
     
-    # Calcular diferencias y porcentajes
     for ofi in reparto:
         ofi["diferencia"] = ofi["cuota_objetivo"] - ofi["total"]
         ofi["porcentaje_cumplido"] = (ofi["total"] / ofi["cuota_objetivo"] * 100) if ofi["cuota_objetivo"] > 0 else 0
@@ -562,27 +539,22 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
     return reparto, stock
 
 def validar_distribucion(reparto, stock_inicial, stock_final):
-    """Valida que la distribución sea correcta"""
-    # Verificar que el stock final no sea negativo
     for denom, cantidad in stock_final.items():
         if cantidad < 0:
             return False, f"Stock negativo para ${denom}: {cantidad}"
     
-    # Verificar que el total entregado no exceda el stock inicial
     total_entregado = sum(ofi["total"] for ofi in reparto)
     total_stock_inicial = sum(denom * cantidad for denom, cantidad in stock_inicial.items())
     total_stock_final = sum(denom * cantidad for denom, cantidad in stock_final.items())
     
-    # Permitir una diferencia de hasta $100 por redondeo
     tolerancia = 100
     
     if total_entregado > total_stock_inicial + tolerancia:
-        return False, f"Total entregado (${total_entregado:,.0f}) excede stock inicial (${total_stock_inicial:,.0f}) por ${total_entregado - total_stock_inicial:,.0f}"
+        return False, f"Total entregado (${total_entregado:,.0f}) excede stock inicial (${total_stock_inicial:,.0f})"
     
     if abs((total_stock_inicial - total_stock_final) - total_entregado) > tolerancia:
-        return False, f"Diferencia de stock (${total_stock_inicial - total_stock_final:,.0f}) no coincide con entregado (${total_entregado:,.0f})"
+        return False, f"Diferencia de stock no coincide con entregado"
     
-    # Verificar que todas las dependencias tengan al menos algo
     for ofi in reparto:
         if ofi["total"] <= 0 and ofi["cuota_objetivo"] > 0:
             return False, f"La dependencia {ofi['nombre']} no recibió vales"
@@ -763,8 +735,8 @@ def simular_notificacion(mensaje):
     st.success(f"📧 {mensaje}")
 
 def mostrar_historial_detallado():
-    """Muestra el historial detallado por dependencia"""
-    st.header("📜 Historial Detallado por Dependencia")
+    """Muestra el historial detallado por dependencia como planilla para separar vales"""
+    st.header("📜 Historial de Distribución - Planilla de Separación")
     
     try:
         detalle = obtener_detalle_entregas()
@@ -776,10 +748,8 @@ def mostrar_historial_detallado():
         st.info("No hay registros de entregas detalladas")
         return
     
-    # Convertir a DataFrame y limpiar datos
     df_detalle = pd.DataFrame(detalle)
     
-    # Verificar que tiene los datos esperados
     if df_detalle.empty:
         st.info("No hay registros de entregas detalladas")
         return
@@ -803,120 +773,135 @@ def mostrar_historial_detallado():
         if not df_detalle.empty and "fecha" in df_detalle.columns:
             fechas_disponibles = sorted(df_detalle["fecha"].unique(), reverse=True)
             fecha_seleccionada = st.selectbox(
-                "📅 Filtrar por fecha",
-                options=["Todas"] + [str(f.date()) for f in fechas_disponibles[:20]]
+                "📅 Seleccionar fecha de distribución",
+                options=["Todas"] + [str(f.date()) for f in fechas_disponibles]
             )
     with col2:
-        if not df_detalle.empty and "dependencia_nombre" in df_detalle.columns:
-            dependencias_uniq = sorted(df_detalle["dependencia_nombre"].unique())
-            dep_seleccionada = st.selectbox(
-                "🏢 Filtrar por dependencia",
-                options=["Todas"] + dependencias_uniq
-            )
+        # Opción para mostrar en formato planilla
+        mostrar_planilla = st.checkbox("📋 Mostrar como planilla de separación", value=True)
     
     # Aplicar filtros
     df_filtrado = df_detalle.copy()
     if fecha_seleccionada and fecha_seleccionada != "Todas":
         df_filtrado = df_filtrado[df_filtrado["fecha"].astype(str).str.contains(fecha_seleccionada)]
-    if dep_seleccionada and dep_seleccionada != "Todas":
-        df_filtrado = df_filtrado[df_filtrado["dependencia_nombre"] == dep_seleccionada]
     
     if df_filtrado.empty:
         st.info("No hay registros con los filtros seleccionados")
         return
     
-    # Mostrar resumen
-    st.subheader("📊 Resumen de la Distribución")
+    # Si hay múltiples registros para la misma fecha, agrupar por dependencia
+    if fecha_seleccionada != "Todas":
+        # Agrupar por dependencia para una misma fecha
+        df_agrupado = df_filtrado.groupby(["dependencia_nombre", "dependencia_id"]).agg({
+            "cuota_objetivo": "first",
+            "total_entregado": "sum",
+            **{f"vale_{d}": "sum" for d in DENOMINACIONES}
+        }).reset_index()
+        
+        df_agrupado["tipo"] = df_filtrado["tipo"].iloc[0] if "tipo" in df_filtrado.columns else "AUTO"
+        df_agrupado["fecha"] = df_filtrado["fecha"].iloc[0] if "fecha" in df_filtrado.columns else pd.NaT
+    else:
+        df_agrupado = df_filtrado
     
-    total_general = float(df_filtrado["total_entregado"].sum()) if "total_entregado" in df_filtrado.columns else 0
-    total_cuotas = float(df_filtrado["cuota_objetivo"].sum()) if "cuota_objetivo" in df_filtrado.columns else 0
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("💰 Total Entregado", f"${total_general:,.0f}")
-    with col2:
-        st.metric("📊 Total Cuotas", f"${total_cuotas:,.0f}")
-    with col3:
-        st.metric("📈 Diferencia", f"${total_cuotas - total_general:,.0f}")
-    
-    # Mostrar tabla detallada
-    st.subheader("📋 Detalle por Dependencia")
-    
-    columnas_mostrar = ["fecha", "dependencia_nombre", "cuota_objetivo", "total_entregado", "tipo"]
-    for denom in DENOMINACIONES:
-        col_name = f"vale_{denom}"
-        if col_name in df_filtrado.columns:
-            columnas_mostrar.append(col_name)
-    
-    columnas_existentes = [col for col in columnas_mostrar if col in df_filtrado.columns]
-    df_mostrar = df_filtrado[columnas_existentes].copy()
-    
-    for col in df_mostrar.columns:
-        if col not in ["fecha", "dependencia_nombre", "tipo"]:
+    if mostrar_planilla:
+        # Mostrar como planilla de separación
+        st.markdown("---")
+        st.markdown("""
+        <div class="planilla-separacion">
+            <h3>📋 PLANILLA DE SEPARACIÓN DE VALES</h3>
+            <p><strong>Fecha:</strong> {}</p>
+            <p><strong>Total a distribuir:</strong> ${:,.0f}</p>
+        </div>
+        """.format(
+            fecha_seleccionada if fecha_seleccionada != "Todas" else "Todas las fechas",
+            df_agrupado["total_entregado"].sum() if "total_entregado" in df_agrupado.columns else 0
+        ), unsafe_allow_html=True)
+        
+        # Mostrar cada dependencia con sus vales
+        for idx, row in df_agrupado.iterrows():
+            st.markdown(f"""
+            <div class="planilla-separacion">
+                <div class="dependencia-item">
+                    <strong>{row['dependencia_nombre']}</strong>
+                    <br>
+                    Cuota: ${row['cuota_objetivo']:,.0f} | Entregado: ${row['total_entregado']:,.0f}
+                    <br>
+                    <strong>Vales a entregar:</strong>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Mostrar vales en columnas
+            cols = st.columns(len(DENOMINACIONES))
+            for i, denom in enumerate(DENOMINACIONES):
+                col_name = f"vale_{denom}"
+                cantidad = row[col_name] if col_name in row else 0
+                with cols[i]:
+                    if cantidad > 0:
+                        st.metric(
+                            f"${denom:,.0f}",
+                            f"{int(cantidad)}",
+                            delta=f"${denom * int(cantidad):,.0f}"
+                        )
+                    else:
+                        st.metric(
+                            f"${denom:,.0f}",
+                            "0",
+                            delta=None
+                        )
+            
+            # Mostrar total de la dependencia
+            total_vale = sum(row[f"vale_{denom}"] * denom for denom in DENOMINACIONES if f"vale_{denom}" in row)
+            st.markdown(f"""
+                <div style="text-align: right; font-weight: bold; margin-top: 10px;">
+                    Total en vales: ${total_vale:,.0f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Botón para descargar planilla
+        if st.button("📥 Descargar planilla completa (CSV)"):
             try:
-                df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${float(x):,.0f}" if pd.notnull(x) and x != 0 else "$0")
-            except:
-                df_mostrar[col] = df_mostrar[col].apply(lambda x: "$0")
-    
-    st.dataframe(df_mostrar, use_container_width=True, height=400)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("📥 Descargar historial filtrado (CSV)"):
-            try:
-                df_descarga = df_filtrado.copy()
-                csv = df_descarga.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                # Crear CSV con el formato de planilla
+                df_planilla = df_agrupado.copy()
+                # Renombrar columnas para mejor lectura
+                columnas_renombrar = {
+                    "dependencia_nombre": "Dependencia",
+                    "cuota_objetivo": "Cuota",
+                    "total_entregado": "Total_Entregado"
+                }
+                for d in DENOMINACIONES:
+                    columnas_renombrar[f"vale_{d}"] = f"Vale_{d}"
+                df_planilla = df_planilla.rename(columns=columnas_renombrar)
+                
+                csv = df_planilla.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                 b64 = base64.b64encode(csv).decode()
-                href = f'<a href="data:file/csv;base64,{b64}" download="historial_detallado.csv">⬇️ Descargar CSV</a>'
+                fecha_str = fecha_seleccionada.replace("/", "-") if fecha_seleccionada != "Todas" else "todas"
+                href = f'<a href="data:file/csv;base64,{b64}" download="planilla_separacion_{fecha_str}.csv">⬇️ Descargar CSV</a>'
                 st.markdown(href, unsafe_allow_html=True)
             except Exception as e:
                 st.error(f"Error al descargar: {e}")
     
-    with col2:
-        if st.button("📊 Ver gráfico de distribución"):
-            try:
-                import plotly.express as px
-                
-                if len(df_filtrado) > 0 and "dependencia_nombre" in df_filtrado.columns and "total_entregado" in df_filtrado.columns:
-                    df_agrupado = df_filtrado.groupby("dependencia_nombre").agg({
-                        "total_entregado": "sum",
-                        "cuota_objetivo": "sum"
-                    }).reset_index()
-                    
-                    df_agrupado["total_entregado"] = pd.to_numeric(df_agrupado["total_entregado"], errors='coerce').fillna(0)
-                    df_agrupado["cuota_objetivo"] = pd.to_numeric(df_agrupado["cuota_objetivo"], errors='coerce').fillna(0)
-                    
-                    if not df_agrupado.empty:
-                        fig = px.bar(
-                            df_agrupado,
-                            x="dependencia_nombre",
-                            y=["total_entregado", "cuota_objetivo"],
-                            title="Total por Dependencia",
-                            barmode="group",
-                            color_discrete_sequence=["#667eea", "#38ef7d"],
-                            labels={
-                                "dependencia_nombre": "Dependencia",
-                                "value": "Monto ($)",
-                                "variable": "Métrica"
-                            }
-                        )
-                        fig.update_layout(
-                            xaxis_tickangle=-45,
-                            yaxis_title="Monto ($)"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.warning("No hay suficientes datos para generar el gráfico")
-                else:
-                    st.warning("No hay datos suficientes para generar el gráfico")
-            except ImportError:
-                st.info("📊 Instala plotly para ver gráficos: pip install plotly")
-            except Exception as e:
-                st.error(f"Error al generar gráfico: {e}")
-
-# ============================================
-# FUNCIÓN PARA FORZAR ACTUALIZACIÓN DE CACHÉ
-# ============================================
+    else:
+        # Mostrar como tabla normal
+        st.subheader("📊 Detalle de Distribución")
+        
+        columnas_mostrar = ["fecha", "dependencia_nombre", "cuota_objetivo", "total_entregado", "tipo"]
+        for denom in DENOMINACIONES:
+            col_name = f"vale_{denom}"
+            if col_name in df_agrupado.columns:
+                columnas_mostrar.append(col_name)
+        
+        columnas_existentes = [col for col in columnas_mostrar if col in df_agrupado.columns]
+        df_mostrar = df_agrupado[columnas_existentes].copy()
+        
+        for col in df_mostrar.columns:
+            if col not in ["fecha", "dependencia_nombre", "tipo"]:
+                try:
+                    df_mostrar[col] = df_mostrar[col].apply(lambda x: f"${float(x):,.0f}" if pd.notnull(x) and x != 0 else "$0")
+                except:
+                    df_mostrar[col] = df_mostrar[col].apply(lambda x: "$0")
+        
+        st.dataframe(df_mostrar, use_container_width=True, height=400)
 
 def forzar_actualizacion():
     """Limpia el caché y recarga los datos"""
@@ -958,7 +943,6 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
-    # Botón para forzar actualización
     if st.sidebar.button("🔄 Forzar actualización de datos"):
         forzar_actualizacion()
         st.success("✅ Datos actualizados")
@@ -1004,8 +988,12 @@ else:
                 color: #ffffff !important;
                 -webkit-text-fill-color: #ffffff !important;
             }
-            .historial-detalle {
+            .planilla-separacion {
                 background-color: #16213e;
+                color: #ffffff;
+            }
+            .planilla-separacion .dependencia-item {
+                background-color: #1a1a2e;
                 color: #ffffff;
             }
         </style>
@@ -1114,7 +1102,6 @@ else:
                     
                     mostrar_graficos(reparto)
                     
-                    # Mostrar tabla con detalles y porcentajes
                     datos_tabla = []
                     for ofi in reparto:
                         cuota = ofi['cuota_objetivo']
@@ -1122,13 +1109,12 @@ else:
                         diferencia = cuota - total
                         porcentaje = ofi.get('porcentaje_cumplido', 0)
                         
-                        # Color según el porcentaje
                         if porcentaje >= 100:
-                            color = "🟢"  # Verde
+                            color = "🟢"
                         elif porcentaje >= 80:
-                            color = "🟡"  # Amarillo
+                            color = "🟡"
                         else:
-                            color = "🔴"  # Rojo
+                            color = "🔴"
                         
                         datos_tabla.append({
                             "Dependencia": ofi["nombre"],
@@ -1155,7 +1141,6 @@ else:
                         }
                     )
                     
-                    # Mostrar estadísticas de cumplimiento
                     st.subheader("📊 Estadísticas de Cumplimiento")
                     cumplidos = sum(1 for ofi in reparto if ofi["total"] >= ofi["cuota_objetivo"])
                     total_deps = len(reparto)
@@ -1175,17 +1160,15 @@ else:
                     st.session_state.stock_nuevo = stock_nuevo
                     st.session_state.fecha_dist = fecha_dist
             
-            # Confirmación antes de guardar
             if 'reparto' in st.session_state:
                 with st.container():
                     st.markdown("---")
                     st.subheader("📋 Confirmar Distribución")
                     
-                    # Validar la distribución
                     es_valido, mensaje = validar_distribucion(
                         st.session_state.reparto,
-                        stock,  # stock inicial
-                        st.session_state.stock_nuevo  # stock final
+                        stock,
+                        st.session_state.stock_nuevo
                     )
                     
                     if es_valido:
@@ -1194,7 +1177,6 @@ else:
                         st.error(f"❌ {mensaje}")
                         st.warning("⚠️ Revisa la distribución antes de guardar")
                     
-                    # Mostrar resumen
                     total_entregado = sum(ofi["total"] for ofi in st.session_state.reparto)
                     total_cuotas = sum(ofi["cuota_objetivo"] for ofi in st.session_state.reparto)
                     total_diferencia = total_cuotas - total_entregado
@@ -1209,7 +1191,6 @@ else:
                     with col4:
                         st.metric("Stock restante", f"${calcular_total_caja(st.session_state.stock_nuevo):,.0f}")
                     
-                    # Mostrar detalle de vales usados
                     st.subheader("📊 Resumen de Vales Utilizados")
                     vales_usados = {denom: 0 for denom in DENOMINACIONES}
                     for ofi in st.session_state.reparto:
