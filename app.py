@@ -8,8 +8,6 @@ import time
 import re
 import io
 import base64
-from functools import lru_cache
-import hashlib
 
 st.set_page_config(page_title="Sistema de Vales", layout="wide")
 
@@ -22,7 +20,6 @@ DENOMINACIONES = [20000, 10000, 3000, 2000, 1000, 500, 100]
 # ============================================
 
 class CacheManager:
-    """Gestor de caché para reducir peticiones a la API"""
     def __init__(self):
         self.cache = {}
         self.timestamps = {}
@@ -479,7 +476,13 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
         
         distribuir_denominacion(valor_vale, cantidad_disponible, deudores)
     
+    # Recalcular totales a partir de los vales
     for ofi in reparto:
+        total_calculado = 0
+        for i, denom in enumerate(DENOMINACIONES):
+            total_calculado += ofi["vales"][i] * denom
+        
+        ofi["total"] = total_calculado
         ofi["diferencia"] = ofi["cuota_objetivo"] - ofi["total"]
         ofi["porcentaje_cumplido"] = (ofi["total"] / ofi["cuota_objetivo"] * 100) if ofi["cuota_objetivo"] > 0 else 0
     
@@ -745,38 +748,11 @@ def mostrar_historial_detallado():
         st.info("No hay registros con los filtros seleccionados")
         return
     
-    # NO RE-CALCULAR NADA - Mostrar los datos tal como están guardados
+    # CORREGIDO: Para mostrar los datos, NO agrupar si es una fecha específica
     if fecha_seleccionada != "Todas":
-        columnas_agrupacion = []
-        if "dependencia_nombre" in df_filtrado.columns:
-            columnas_agrupacion.append("dependencia_nombre")
-        if "dependencia_id" in df_filtrado.columns:
-            columnas_agrupacion.append("dependencia_id")
-        
-        if columnas_agrupacion:
-            agg_dict = {}
-            if "fecha" in df_filtrado.columns:
-                agg_dict["fecha"] = "first"
-            if "cuota_objetivo" in df_filtrado.columns:
-                agg_dict["cuota_objetivo"] = "first"
-            if "total_entregado" in df_filtrado.columns:
-                agg_dict["total_entregado"] = "sum"
-            if "tipo" in df_filtrado.columns:
-                agg_dict["tipo"] = "first"
-            
-            for d in DENOMINACIONES:
-                col_name = f"vale_{d}"
-                if col_name in df_filtrado.columns:
-                    agg_dict[col_name] = "sum"
-            
-            try:
-                df_mostrar = df_filtrado.groupby(columnas_agrupacion).agg(agg_dict).reset_index()
-            except Exception as e:
-                st.warning(f"Error al agrupar datos: {e}")
-                df_mostrar = df_filtrado
-        else:
-            df_mostrar = df_filtrado
+        df_mostrar = df_filtrado.copy()
     else:
+        # Solo agrupar si las columnas existen
         columnas_agrupacion = []
         if "dependencia_nombre" in df_filtrado.columns:
             columnas_agrupacion.append("dependencia_nombre")
@@ -807,10 +783,20 @@ def mostrar_historial_detallado():
         else:
             df_mostrar = df_filtrado
     
+    # CORREGIDO: Calcular el total a partir de los vales guardados
+    for idx, row in df_mostrar.iterrows():
+        total_calculado = 0
+        for denom in DENOMINACIONES:
+            col_name = f"vale_{denom}"
+            if col_name in row:
+                cantidad = int(row[col_name]) if pd.notnull(row[col_name]) else 0
+                total_calculado += cantidad * denom
+        df_mostrar.at[idx, "total_vales_calculado"] = total_calculado
+    
     if mostrar_planilla:
         st.markdown("---")
         
-        total_general = df_mostrar["total_entregado"].sum() if "total_entregado" in df_mostrar.columns else 0
+        total_general = df_mostrar["total_vales_calculado"].sum() if "total_vales_calculado" in df_mostrar.columns else 0
         
         st.markdown(f"""
         <div class="planilla-separacion">
@@ -822,21 +808,13 @@ def mostrar_historial_detallado():
         
         for idx, row in df_mostrar.iterrows():
             cuota = row['cuota_objetivo'] if 'cuota_objetivo' in row else 0
-            total_entregado = row['total_entregado'] if 'total_entregado' in row else 0
-            
-            total_vales = 0
-            for denom in DENOMINACIONES:
-                col_name = f"vale_{denom}"
-                if col_name in row:
-                    cantidad = int(row[col_name]) if pd.notnull(row[col_name]) else 0
-                    total_vales += cantidad * denom
+            total_entregado = row['total_vales_calculado'] if 'total_vales_calculado' in row else 0
             
             nombre_dependencia = row['dependencia_nombre'] if 'dependencia_nombre' in row else "Sin nombre"
-            coincide = abs(total_vales - total_entregado) <= 100
             
             st.markdown(f"""
             <div class="planilla-separacion">
-                <div class="dependencia-item" style="border-left: 4px solid {'#28a745' if coincide else '#dc3545'};">
+                <div class="dependencia-item" style="border-left: 4px solid #667eea;">
                     <strong>{nombre_dependencia}</strong>
                     <br>
                     <span style="color: #6c757d;">Cuota:</span> <strong>${cuota:,.0f}</strong> | 
@@ -873,10 +851,6 @@ def mostrar_historial_detallado():
                            padding-top: 10px; border-top: 2px solid #dee2e6;">
                     <strong>Total en vales: ${total_mostrado:,.0f}</strong>
                 </div>
-                <div style="text-align: right; color: {'#28a745' if coincide else '#dc3545'}; 
-                           margin-bottom: 10px;">
-                    {'✅ Coincide con entregado' if coincide else f'⚠️ Diferencia: ${abs(total_entregado - total_mostrado):,.0f}'}
-                </div>
             </div>
             """, unsafe_allow_html=True)
         
@@ -886,7 +860,7 @@ def mostrar_historial_detallado():
                 columnas_renombrar = {
                     "dependencia_nombre": "Dependencia",
                     "cuota_objetivo": "Cuota",
-                    "total_entregado": "Total_Entregado"
+                    "total_vales_calculado": "Total_Entregado"
                 }
                 for d in DENOMINACIONES:
                     col_name = f"vale_{d}"
@@ -914,8 +888,8 @@ def mostrar_historial_detallado():
             columnas_mostrar.append("dependencia_nombre")
         if "cuota_objetivo" in df_mostrar.columns:
             columnas_mostrar.append("cuota_objetivo")
-        if "total_entregado" in df_mostrar.columns:
-            columnas_mostrar.append("total_entregado")
+        if "total_vales_calculado" in df_mostrar.columns:
+            columnas_mostrar.append("total_vales_calculado")
         if "tipo" in df_mostrar.columns:
             columnas_mostrar.append("tipo")
         
