@@ -744,18 +744,40 @@ def mostrar_historial_detallado():
         st.info("No hay registros con los filtros seleccionados")
         return
     
-    # CORREGIDO: Para una fecha específica, mostrar los datos tal como están guardados
+    # CORREGIDO: Verificar qué columnas existen antes de agrupar
     if fecha_seleccionada != "Todas":
         df_mostrar = df_filtrado.copy()
     else:
-        # Para todas las fechas, agrupar por dependencia sumando los vales
-        df_mostrar = df_filtrado.groupby(["dependencia_nombre", "dependencia_id"]).agg({
-            "fecha": "first",
-            "cuota_objetivo": "first",
-            "total_entregado": "sum",
-            "tipo": "first",
-            **{f"vale_{d}": "sum" for d in DENOMINACIONES}
-        }).reset_index()
+        # Solo agrupar si las columnas existen
+        columnas_agrupacion = ["dependencia_nombre", "dependencia_id"]
+        columnas_existentes = [col for col in columnas_agrupacion if col in df_filtrado.columns]
+        
+        if not columnas_existentes:
+            df_mostrar = df_filtrado
+        else:
+            # Crear diccionario de agregación solo con columnas existentes
+            agg_dict = {}
+            if "fecha" in df_filtrado.columns:
+                agg_dict["fecha"] = "first"
+            if "cuota_objetivo" in df_filtrado.columns:
+                agg_dict["cuota_objetivo"] = "first"
+            if "total_entregado" in df_filtrado.columns:
+                agg_dict["total_entregado"] = "sum"
+            if "tipo" in df_filtrado.columns:
+                agg_dict["tipo"] = "first"
+            
+            # Agregar columnas de vales si existen
+            for d in DENOMINACIONES:
+                col_name = f"vale_{d}"
+                if col_name in df_filtrado.columns:
+                    agg_dict[col_name] = "sum"
+            
+            # Realizar el agrupamiento
+            try:
+                df_mostrar = df_filtrado.groupby(columnas_existentes).agg(agg_dict).reset_index()
+            except Exception as e:
+                st.warning(f"Error al agrupar datos: {e}")
+                df_mostrar = df_filtrado
     
     # Calcular el total de vales para verificar
     for idx, row in df_mostrar.iterrows():
@@ -763,8 +785,11 @@ def mostrar_historial_detallado():
         for denom in DENOMINACIONES:
             col_name = f"vale_{denom}"
             if col_name in row:
-                cantidad = int(row[col_name]) if pd.notnull(row[col_name]) else 0
-                total_calculado += cantidad * denom
+                try:
+                    cantidad = int(row[col_name]) if pd.notnull(row[col_name]) else 0
+                    total_calculado += cantidad * denom
+                except:
+                    pass
         df_mostrar.at[idx, "total_vales_calculado"] = total_calculado
     
     if mostrar_planilla:
@@ -788,10 +813,12 @@ def mostrar_historial_detallado():
             
             coincide = abs(total_vales_calculado - total_entregado) <= 100
             
+            nombre_dependencia = row['dependencia_nombre'] if 'dependencia_nombre' in row else "Sin nombre"
+            
             st.markdown(f"""
             <div class="planilla-separacion">
                 <div class="dependencia-item" style="border-left: 4px solid {'#28a745' if coincide else '#dc3545'};">
-                    <strong>{row['dependencia_nombre']}</strong>
+                    <strong>{nombre_dependencia}</strong>
                     <br>
                     <span style="color: #6c757d;">Cuota:</span> <strong>${cuota:,.0f}</strong> | 
                     <span style="color: #6c757d;">Entregado:</span> <strong>${total_entregado:,.0f}</strong>
@@ -836,7 +863,8 @@ def mostrar_historial_detallado():
             </div>
             """, unsafe_allow_html=True)
         
-        # Botón para descargar planilla        if st.button("📥 Descargar planilla completa (CSV)"):
+        # Botón para descargar planilla
+        if st.button("📥 Descargar planilla completa (CSV)"):
             try:
                 df_planilla = df_mostrar.copy()
                 columnas_renombrar = {
@@ -846,8 +874,13 @@ def mostrar_historial_detallado():
                     "total_vales_calculado": "Total_Vales"
                 }
                 for d in DENOMINACIONES:
-                    columnas_renombrar[f"vale_{d}"] = f"Vale_{d}"
-                df_planilla = df_planilla.rename(columns=columnas_renombrar)
+                    col_name = f"vale_{d}"
+                    if col_name in df_planilla.columns:
+                        columnas_renombrar[col_name] = f"Vale_{d}"
+                
+                # Solo renombrar columnas que existen
+                columnas_existentes_renombrar = {k: v for k, v in columnas_renombrar.items() if k in df_planilla.columns}
+                df_planilla = df_planilla.rename(columns=columnas_existentes_renombrar)
                 
                 csv = df_planilla.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                 b64 = base64.b64encode(csv).decode()
@@ -861,7 +894,20 @@ def mostrar_historial_detallado():
         # Mostrar como tabla normal
         st.subheader("📊 Detalle de Distribución")
         
-        columnas_mostrar = ["fecha", "dependencia_nombre", "cuota_objetivo", "total_entregado", "tipo"]
+        # Seleccionar columnas a mostrar
+        columnas_mostrar = []
+        if "fecha" in df_mostrar.columns:
+            columnas_mostrar.append("fecha")
+        if "dependencia_nombre" in df_mostrar.columns:
+            columnas_mostrar.append("dependencia_nombre")
+        if "cuota_objetivo" in df_mostrar.columns:
+            columnas_mostrar.append("cuota_objetivo")
+        if "total_entregado" in df_mostrar.columns:
+            columnas_mostrar.append("total_entregado")
+        if "tipo" in df_mostrar.columns:
+            columnas_mostrar.append("tipo")
+        
+        # Agregar columnas de vales
         for denom in DENOMINACIONES:
             col_name = f"vale_{denom}"
             if col_name in df_mostrar.columns:
@@ -870,6 +916,7 @@ def mostrar_historial_detallado():
         if "total_vales_calculado" in df_mostrar.columns:
             columnas_mostrar.append("total_vales_calculado")
         
+        # Filtrar columnas existentes
         columnas_existentes = [col for col in columnas_mostrar if col in df_mostrar.columns]
         df_tabla = df_mostrar[columnas_existentes].copy()
         
