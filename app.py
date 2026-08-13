@@ -131,6 +131,18 @@ def aplicar_estilo():
             padding: 15px;
             margin: 10px 0;
         }
+        .diferencia-positiva {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .diferencia-negativa {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .diferencia-cero {
+            color: #ffc107;
+            font-weight: bold;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -334,14 +346,24 @@ def obtener_detalle_entregas():
     return obtener_detalle_entregas_cached()
 
 def actualizar_stock(stock_nuevo):
+    """Actualiza el stock en Google Sheets"""
     try:
         sheet = conectar_gsheets()
         ws = sheet.worksheet("vales_disponibles")
+        
+        # Verificar que no haya cantidades negativas
+        for denom, cantidad in stock_nuevo.items():
+            if cantidad < 0:
+                st.error(f"Error: Stock negativo para ${denom}: {cantidad}")
+                return False
+        
+        # Actualizar cada denominación
         for denom, cantidad in stock_nuevo.items():
             cell = ws.find(str(denom))
             if cell:
                 ws.update_cell(cell.row, 2, cantidad)
-                time.sleep(0.5)  # Pausa más larga para evitar límites
+                time.sleep(0.5)  # Pausa para evitar límites de API
+        
         # Limpiar caché después de actualizar
         st.cache_data.clear()
         return True
@@ -418,7 +440,10 @@ def registrar_entrega_detallada(fecha, reparto, tipo):
         return False
 
 def distribuir_vales_auto(dependencias, stock_actual, miercoles):
+    """Distribuye vales automáticamente con validación de cantidades"""
     reparto = []
+    
+    # Calcular cuota semanal para cada dependencia
     for dep in dependencias:
         cuota_semanal = dep["monto_mensual"] / miercoles
         reparto.append({
@@ -426,46 +451,79 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
             "nombre": dep["nombre"],
             "cuota_objetivo": cuota_semanal,
             "vales": [0, 0, 0, 0, 0, 0, 0],
-            "total": 0
+            "total": 0,
+            "diferencia": 0
         })
+    
     stock = stock_actual.copy()
     
-    def calcular_combinacion_exacta(monto, stock_disponible):
-        combinacion = [0, 0, 0, 0, 0, 0, 0]
+    # Función mejorada para calcular combinación
+    def calcular_combinacion(monto, stock_disponible):
+        """Calcula la mejor combinación de vales para un monto"""
+        combinacion = [0, 0, 0, 0, 0, 0, 0]  # 20k, 10k, 3k, 2k, 1k, 500, 100
         resto = monto
-        for j, valor_vale in enumerate(DENOMINACIONES):
+        
+        # Primero, intentar con los vales más grandes
+        for i, valor_vale in enumerate(DENOMINACIONES):
             if resto <= 0:
                 break
             if stock_disponible[valor_vale] > 0:
+                # Máximo de vales que podemos usar de esta denominación
                 max_posibles = min(stock_disponible[valor_vale], resto // valor_vale)
                 if max_posibles > 0:
+                    # Intentar usar todos los posibles
                     usar = max_posibles
-                    if j < len(DENOMINACIONES) - 1:
-                        siguiente_valor = DENOMINACIONES[j + 1]
-                        resto_despues = resto - (usar * valor_vale)
-                        if resto_despues > 0 and resto_despues % siguiente_valor != 0:
-                            usar = max(0, usar - 1)
-                    combinacion[j] = usar
+                    combinacion[i] = usar
                     resto -= usar * valor_vale
-        for j, valor_vale in enumerate(DENOMINACIONES):
-            if resto <= 0:
-                break
-            if stock_disponible[valor_vale] > combinacion[j]:
-                disponibles = stock_disponible[valor_vale] - combinacion[j]
-                if resto >= valor_vale:
-                    necesarios = min(disponibles, resto // valor_vale)
-                    combinacion[j] += necesarios
-                    resto -= necesarios * valor_vale
+                    stock_disponible[valor_vale] -= usar
+        
+        # Si sobró algo, intentar ajustar con vales más pequeños
+        if resto > 0:
+            for i, valor_vale in enumerate(DENOMINACIONES):
+                if resto <= 0:
+                    break
+                if stock_disponible[valor_vale] > 0:
+                    necesarios = min(stock_disponible[valor_vale], resto // valor_vale)
+                    if necesarios > 0:
+                        combinacion[i] += necesarios
+                        resto -= necesarios * valor_vale
+                        stock_disponible[valor_vale] -= necesarios
+        
         return combinacion, resto
     
+    # Distribuir para cada dependencia
     for ofi in reparto:
         monto_necesario = ofi["cuota_objetivo"]
-        combinacion, resto = calcular_combinacion_exacta(monto_necesario, stock)
+        combinacion, resto = calcular_combinacion(monto_necesario, stock)
         ofi["vales"] = combinacion
         ofi["total"] = monto_necesario - resto
-        for j, valor_vale in enumerate(DENOMINACIONES):
-            stock[valor_vale] -= combinacion[j]
+        ofi["diferencia"] = resto  # Lo que falta o sobra
+        
+        # Actualizar stock
+        for i, valor_vale in enumerate(DENOMINACIONES):
+            stock[valor_vale] -= combinacion[i]
+    
     return reparto, stock
+
+def validar_distribucion(reparto, stock_inicial, stock_final):
+    """Valida que la distribución sea correcta"""
+    # Verificar que el stock final no sea negativo
+    for denom, cantidad in stock_final.items():
+        if cantidad < 0:
+            return False, f"Stock negativo para ${denom}: {cantidad}"
+    
+    # Verificar que el total entregado no exceda el stock inicial
+    total_entregado = sum(ofi["total"] for ofi in reparto)
+    total_stock_inicial = sum(denom * cantidad for denom, cantidad in stock_inicial.items())
+    total_stock_final = sum(denom * cantidad for denom, cantidad in stock_final.items())
+    
+    if total_entregado > total_stock_inicial:
+        return False, f"Total entregado (${total_entregado:,.0f}) excede stock inicial (${total_stock_inicial:,.0f})"
+    
+    if abs((total_stock_inicial - total_stock_final) - total_entregado) > 1:
+        return False, f"Diferencia de stock (${total_stock_inicial - total_stock_final:,.0f}) no coincide con entregado (${total_entregado:,.0f})"
+    
+    return True, "Distribución válida"
 
 def registrar_historial(fecha, reparto, tipo, es_ingreso=False, vales_ingresados=None):
     try:
@@ -702,10 +760,9 @@ def mostrar_historial_detallado():
         st.info("No hay registros con los filtros seleccionados")
         return
     
-    # Mostrar resumen - Asegurar que los valores son numéricos
+    # Mostrar resumen
     st.subheader("📊 Resumen de la Distribución")
     
-    # Calcular totales de forma segura
     total_general = float(df_filtrado["total_entregado"].sum()) if "total_entregado" in df_filtrado.columns else 0
     total_cuotas = float(df_filtrado["cuota_objetivo"].sum()) if "cuota_objetivo" in df_filtrado.columns else 0
     
@@ -720,18 +777,15 @@ def mostrar_historial_detallado():
     # Mostrar tabla detallada
     st.subheader("📋 Detalle por Dependencia")
     
-    # Seleccionar columnas a mostrar
     columnas_mostrar = ["fecha", "dependencia_nombre", "cuota_objetivo", "total_entregado", "tipo"]
     for denom in DENOMINACIONES:
         col_name = f"vale_{denom}"
         if col_name in df_filtrado.columns:
             columnas_mostrar.append(col_name)
     
-    # Filtrar columnas existentes
     columnas_existentes = [col for col in columnas_mostrar if col in df_filtrado.columns]
     df_mostrar = df_filtrado[columnas_existentes].copy()
     
-    # Formatear números de forma segura
     for col in df_mostrar.columns:
         if col not in ["fecha", "dependencia_nombre", "tipo"]:
             try:
@@ -739,15 +793,12 @@ def mostrar_historial_detallado():
             except:
                 df_mostrar[col] = df_mostrar[col].apply(lambda x: "$0")
     
-    # Mostrar tabla con scroll
     st.dataframe(df_mostrar, use_container_width=True, height=400)
     
-    # Opción para descargar el historial filtrado
     col1, col2 = st.columns(2)
     with col1:
         if st.button("📥 Descargar historial filtrado (CSV)"):
             try:
-                # Crear copia para descarga con números sin formato
                 df_descarga = df_filtrado.copy()
                 csv = df_descarga.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                 b64 = base64.b64encode(csv).decode()
@@ -762,13 +813,11 @@ def mostrar_historial_detallado():
                 import plotly.express as px
                 
                 if len(df_filtrado) > 0 and "dependencia_nombre" in df_filtrado.columns and "total_entregado" in df_filtrado.columns:
-                    # Agrupar por dependencia
                     df_agrupado = df_filtrado.groupby("dependencia_nombre").agg({
                         "total_entregado": "sum",
                         "cuota_objetivo": "sum"
                     }).reset_index()
                     
-                    # Asegurar valores numéricos
                     df_agrupado["total_entregado"] = pd.to_numeric(df_agrupado["total_entregado"], errors='coerce').fillna(0)
                     df_agrupado["cuota_objetivo"] = pd.to_numeric(df_agrupado["cuota_objetivo"], errors='coerce').fillna(0)
                     
@@ -978,7 +1027,12 @@ else:
             tabla_deps = []
             for dep in dependencias:
                 monto_semanal = dep["monto_mensual"] / miercoles
-                tabla_deps.append({"ID": dep["id"], "Dependencia": dep["nombre"], "Monto Mensual": f"${dep['monto_mensual']:,.0f}", "Monto Semanal": f"${monto_semanal:,.0f}"})
+                tabla_deps.append({
+                    "ID": dep["id"], 
+                    "Dependencia": dep["nombre"], 
+                    "Monto Mensual": f"${dep['monto_mensual']:,.0f}", 
+                    "Monto Semanal": f"${monto_semanal:,.0f}"
+                })
             st.dataframe(pd.DataFrame(tabla_deps), use_container_width=True)
             
             st.subheader("💰 Stock Actual")
@@ -995,9 +1049,26 @@ else:
                     
                     mostrar_graficos(reparto)
                     
+                    # Mostrar tabla con detalles
                     datos_tabla = []
                     for ofi in reparto:
-                        datos_tabla.append({"Dependencia": ofi["nombre"], "Cuota": f"${ofi['cuota_objetivo']:,.0f}", "Entregado": f"${ofi['total']:,.0f}", "Diferencia": f"${ofi['cuota_objetivo'] - ofi['total']:,.0f}", "$20k": ofi["vales"][0], "$10k": ofi["vales"][1], "$3k": ofi["vales"][2], "$2k": ofi["vales"][3], "$1k": ofi["vales"][4], "$500": ofi["vales"][5], "$100": ofi["vales"][6]})
+                        cuota = ofi['cuota_objetivo']
+                        total = ofi['total']
+                        diferencia = cuota - total
+                        
+                        datos_tabla.append({
+                            "Dependencia": ofi["nombre"],
+                            "Cuota": f"${cuota:,.0f}",
+                            "Entregado": f"${total:,.0f}",
+                            "Diferencia": f"${diferencia:,.0f}",
+                            "$20k": ofi["vales"][0],
+                            "$10k": ofi["vales"][1],
+                            "$3k": ofi["vales"][2],
+                            "$2k": ofi["vales"][3],
+                            "$1k": ofi["vales"][4],
+                            "$500": ofi["vales"][5],
+                            "$100": ofi["vales"][6]
+                        })
                     st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
                     
                     descargar_reporte_csv(reparto, fecha_dist.strftime("%Y-%m-%d"))
@@ -1006,33 +1077,78 @@ else:
                     st.session_state.stock_nuevo = stock_nuevo
                     st.session_state.fecha_dist = fecha_dist
             
+            # Confirmación antes de guardar
             if 'reparto' in st.session_state:
                 with st.container():
                     st.markdown("---")
                     st.subheader("📋 Confirmar Distribución")
-                    st.info("Revisa el resumen antes de guardar:")
                     
+                    # Validar la distribución
+                    es_valido, mensaje = validar_distribucion(
+                        st.session_state.reparto,
+                        stock,  # stock inicial
+                        st.session_state.stock_nuevo  # stock final
+                    )
+                    
+                    if es_valido:
+                        st.success(f"✅ {mensaje}")
+                    else:
+                        st.error(f"❌ {mensaje}")
+                        st.warning("⚠️ Revisa la distribución antes de guardar")
+                    
+                    # Mostrar resumen
                     total_entregado = sum(ofi["total"] for ofi in st.session_state.reparto)
                     total_cuotas = sum(ofi["cuota_objetivo"] for ofi in st.session_state.reparto)
+                    total_diferencia = total_cuotas - total_entregado
                     
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         st.metric("Total a entregar", f"${total_entregado:,.0f}")
                     with col2:
                         st.metric("Total cuotas", f"${total_cuotas:,.0f}")
                     with col3:
-                        st.metric("Diferencia", f"${total_cuotas - total_entregado:,.0f}")
+                        st.metric("Diferencia", f"${total_diferencia:,.0f}")
+                    with col4:
+                        st.metric("Stock restante", f"${calcular_total_caja(st.session_state.stock_nuevo):,.0f}")
                     
-                    if st.button("✅ Confirmar y Guardar Distribución", type="primary"):
-                        if actualizar_stock(st.session_state.stock_nuevo):
-                            registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
-                            registrar_entrega_detallada(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
-                            st.success("🎉 Distribución guardada exitosamente")
-                            simular_notificacion(f"Distribución del {st.session_state.fecha_dist.strftime('%d/%m/%Y')} guardada")
+                    # Mostrar detalle de vales usados
+                    st.subheader("📊 Resumen de Vales Utilizados")
+                    vales_usados = {denom: 0 for denom in DENOMINACIONES}
+                    for ofi in st.session_state.reparto:
+                        for i, denom in enumerate(DENOMINACIONES):
+                            vales_usados[denom] += ofi["vales"][i]
+                    
+                    vales_df = pd.DataFrame([
+                        {
+                            "Denominación": f"${d:,.0f}",
+                            "Usados": vales_usados[d],
+                            "Stock Inicial": stock.get(d, 0),
+                            "Stock Final": st.session_state.stock_nuevo.get(d, 0)
+                        }
+                        for d in DENOMINACIONES
+                    ])
+                    st.dataframe(vales_df, use_container_width=True)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("❌ Cancelar", use_container_width=True):
                             del st.session_state.reparto
                             del st.session_state.stock_nuevo
                             del st.session_state.fecha_dist
-                            forzar_actualizacion()
+                            st.rerun()
+                    with col2:
+                        if st.button("✅ Confirmar y Guardar", type="primary", use_container_width=True):
+                            if actualizar_stock(st.session_state.stock_nuevo):
+                                registrar_historial(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
+                                registrar_entrega_detallada(st.session_state.fecha_dist, st.session_state.reparto, "AUTO")
+                                st.success("🎉 Distribución guardada exitosamente")
+                                simular_notificacion(f"Distribución del {st.session_state.fecha_dist.strftime('%d/%m/%Y')} guardada")
+                                del st.session_state.reparto
+                                del st.session_state.stock_nuevo
+                                del st.session_state.fecha_dist
+                                forzar_actualizacion()
+                            else:
+                                st.error("❌ Error al guardar la distribución")
     
     # ========== TAB 4: DISTRIBUCIÓN MANUAL ==========
     with tab4:
@@ -1068,7 +1184,13 @@ else:
                         vales_asignados.append(cantidad)
                         total_asignado += cantidad * denom
                 st.metric("Total asignado", f"${total_asignado:,.0f}")
-                reparto_manual.append({"id": dep["id"], "nombre": dep["nombre"], "cuota_objetivo": cuota, "vales": vales_asignados, "total": total_asignado})
+                reparto_manual.append({
+                    "id": dep["id"], 
+                    "nombre": dep["nombre"], 
+                    "cuota_objetivo": cuota, 
+                    "vales": vales_asignados, 
+                    "total": total_asignado
+                })
             
             if st.button("✅ Guardar Distribución Manual", type="primary"):
                 stock_temp = stock.copy()
@@ -1091,7 +1213,14 @@ else:
             forzar_actualizacion()
         stock = obtener_stock_actual()
         total_caja = calcular_total_caja(stock)
-        stock_display = pd.DataFrame([{"Denominación": f"${d:,.0f}", "Cantidad": stock.get(d, 0), "Total": f"${d * stock.get(d, 0):,.0f}"} for d in DENOMINACIONES])
+        stock_display = pd.DataFrame([
+            {
+                "Denominación": f"${d:,.0f}", 
+                "Cantidad": stock.get(d, 0), 
+                "Total": f"${d * stock.get(d, 0):,.0f}"
+            } 
+            for d in DENOMINACIONES
+        ])
         st.dataframe(stock_display, use_container_width=True)
         st.metric("💵 Total en caja", f"${total_caja:,.0f}")
     
