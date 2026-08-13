@@ -99,14 +99,6 @@ def aplicar_estilo():
             margin: 5px 0;
             border-left: 4px solid #667eea;
         }
-        .coincide {
-            color: #28a745;
-            font-weight: bold;
-        }
-        .no-coincide {
-            color: #dc3545;
-            font-weight: bold;
-        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -796,6 +788,7 @@ def mostrar_historial_detallado():
         
         total_general = df_mostrar["total_vales_calculado"].sum() if "total_vales_calculado" in df_mostrar.columns else 0
         total_cuotas = df_mostrar["cuota_objetivo"].sum() if "cuota_objetivo" in df_mostrar.columns else 0
+        total_diferencia = total_cuotas - total_general
         
         st.markdown(f"""
         <div class="planilla-separacion">
@@ -803,7 +796,10 @@ def mostrar_historial_detallado():
             <p><strong>Fecha:</strong> {fecha_seleccionada if fecha_seleccionada != "Todas" else "Todas las fechas"}</p>
             <p><strong>Total cuotas:</strong> ${total_cuotas:,.0f}</p>
             <p><strong>Total entregado en vales:</strong> ${total_general:,.0f}</p>
-            <p><strong>Diferencia total:</strong> ${total_cuotas - total_general:,.0f}</p>
+            <p><strong>Diferencia total:</strong> ${total_diferencia:,.0f}</p>
+            <p style="color: {'#28a745' if total_diferencia == 0 else '#dc3545'};">
+                {'✅ Todas las cuotas cumplidas' if total_diferencia == 0 else f'⚠️ Faltan ${total_diferencia:,.0f} en vales'}
+            </p>
         </div>
         """, unsafe_allow_html=True)
         
