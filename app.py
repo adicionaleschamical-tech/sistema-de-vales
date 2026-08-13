@@ -143,6 +143,18 @@ def aplicar_estilo():
             color: #ffc107;
             font-weight: bold;
         }
+        .cumplimiento-bueno {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .cumplimiento-regular {
+            color: #ffc107;
+            font-weight: bold;
+        }
+        .cumplimiento-malo {
+            color: #dc3545;
+            font-weight: bold;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -440,7 +452,7 @@ def registrar_entrega_detallada(fecha, reparto, tipo):
         return False
 
 def distribuir_vales_auto(dependencias, stock_actual, miercoles):
-    """Distribuye vales automáticamente con validación de cantidades"""
+    """Distribuye vales automáticamente de forma equitativa"""
     reparto = []
     
     # Calcular cuota semanal para cada dependencia
@@ -452,56 +464,100 @@ def distribuir_vales_auto(dependencias, stock_actual, miercoles):
             "cuota_objetivo": cuota_semanal,
             "vales": [0, 0, 0, 0, 0, 0, 0],
             "total": 0,
-            "diferencia": 0
+            "diferencia": 0,
+            "porcentaje_cumplido": 0
         })
     
     stock = stock_actual.copy()
     
-    # Función mejorada para calcular combinación
-    def calcular_combinacion(monto, stock_disponible):
-        """Calcula la mejor combinación de vales para un monto"""
-        combinacion = [0, 0, 0, 0, 0, 0, 0]  # 20k, 10k, 3k, 2k, 1k, 500, 100
-        resto = monto
-        
-        # Primero, intentar con los vales más grandes
-        for i, valor_vale in enumerate(DENOMINACIONES):
-            if resto <= 0:
-                break
-            if stock_disponible[valor_vale] > 0:
-                # Máximo de vales que podemos usar de esta denominación
-                max_posibles = min(stock_disponible[valor_vale], resto // valor_vale)
-                if max_posibles > 0:
-                    # Intentar usar todos los posibles
-                    usar = max_posibles
-                    combinacion[i] = usar
-                    resto -= usar * valor_vale
-                    stock_disponible[valor_vale] -= usar
-        
-        # Si sobró algo, intentar ajustar con vales más pequeños
-        if resto > 0:
-            for i, valor_vale in enumerate(DENOMINACIONES):
-                if resto <= 0:
-                    break
-                if stock_disponible[valor_vale] > 0:
-                    necesarios = min(stock_disponible[valor_vale], resto // valor_vale)
-                    if necesarios > 0:
-                        combinacion[i] += necesarios
-                        resto -= necesarios * valor_vale
-                        stock_disponible[valor_vale] -= necesarios
-        
-        return combinacion, resto
+    # Calcular total a distribuir
+    total_cuotas = sum(ofi["cuota_objetivo"] for ofi in reparto)
+    total_stock = sum(denom * cantidad for denom, cantidad in stock.items())
     
-    # Distribuir para cada dependencia
-    for ofi in reparto:
-        monto_necesario = ofi["cuota_objetivo"]
-        combinacion, resto = calcular_combinacion(monto_necesario, stock)
-        ofi["vales"] = combinacion
-        ofi["total"] = monto_necesario - resto
-        ofi["diferencia"] = resto  # Lo que falta o sobra
+    # Si no hay suficiente stock, ajustar proporcionalmente
+    factor_ajuste = min(1.0, total_stock / total_cuotas) if total_cuotas > 0 else 0
+    
+    # Función para distribuir vales de una denominación específica
+    def distribuir_denominacion(valor_vale, cantidad_disponible, deudores):
+        """Distribuye una denominación específica entre los deudores"""
+        if cantidad_disponible <= 0 or not deudores:
+            return
+        
+        # Calcular cuántos vales necesita cada deudor
+        necesidades = []
+        for ofi in deudores:
+            deuda = ofi["cuota_objetivo"] * factor_ajuste - ofi["total"]
+            if deuda > 0:
+                vales_necesarios = int(deuda // valor_vale)
+                if vales_necesarios > 0:
+                    necesidades.append({
+                        "ofi": ofi,
+                        "vales_necesarios": vales_necesarios,
+                        "deuda": deuda
+                    })
+        
+        if not necesidades:
+            return
+        
+        # Ordenar por deuda mayor (priorizar a los que más deben)
+        necesidades.sort(key=lambda x: x["deuda"], reverse=True)
+        
+        # Distribuir los vales disponibles
+        vales_restantes = cantidad_disponible
+        for necesidad in necesidades:
+            if vales_restantes <= 0:
+                break
+            
+            # Dar la cantidad necesaria o lo que quede
+            vales_a_dar = min(necesidad["vales_necesarios"], vales_restantes)
+            if vales_a_dar > 0:
+                ofi = necesidad["ofi"]
+                # Encontrar el índice de la denominación
+                idx = DENOMINACIONES.index(valor_vale)
+                ofi["vales"][idx] += vales_a_dar
+                ofi["total"] += vales_a_dar * valor_vale
+                vales_restantes -= vales_a_dar
         
         # Actualizar stock
-        for i, valor_vale in enumerate(DENOMINACIONES):
-            stock[valor_vale] -= combinacion[i]
+        stock[valor_vale] = vales_restantes
+    
+    # Primera pasada: distribuir los vales más grandes primero
+    for valor_vale in DENOMINACIONES:
+        cantidad_disponible = stock[valor_vale]
+        if cantidad_disponible <= 0:
+            continue
+        
+        # Identificar quiénes aún necesitan vales
+        deudores = [
+            ofi for ofi in reparto 
+            if ofi["total"] < ofi["cuota_objetivo"] * factor_ajuste
+        ]
+        
+        if not deudores:
+            break
+        
+        distribuir_denominacion(valor_vale, cantidad_disponible, deudores)
+    
+    # Segunda pasada: ajustar con los vales más pequeños si sobraron
+    for valor_vale in reversed(DENOMINACIONES):
+        cantidad_disponible = stock[valor_vale]
+        if cantidad_disponible <= 0:
+            continue
+        
+        deudores = [
+            ofi for ofi in reparto 
+            if ofi["total"] < ofi["cuota_objetivo"] * factor_ajuste
+        ]
+        
+        if not deudores:
+            break
+        
+        distribuir_denominacion(valor_vale, cantidad_disponible, deudores)
+    
+    # Calcular diferencias y porcentajes
+    for ofi in reparto:
+        ofi["diferencia"] = ofi["cuota_objetivo"] - ofi["total"]
+        ofi["porcentaje_cumplido"] = (ofi["total"] / ofi["cuota_objetivo"] * 100) if ofi["cuota_objetivo"] > 0 else 0
     
     return reparto, stock
 
@@ -517,11 +573,19 @@ def validar_distribucion(reparto, stock_inicial, stock_final):
     total_stock_inicial = sum(denom * cantidad for denom, cantidad in stock_inicial.items())
     total_stock_final = sum(denom * cantidad for denom, cantidad in stock_final.items())
     
-    if total_entregado > total_stock_inicial:
-        return False, f"Total entregado (${total_entregado:,.0f}) excede stock inicial (${total_stock_inicial:,.0f})"
+    # Permitir una diferencia de hasta $100 por redondeo
+    tolerancia = 100
     
-    if abs((total_stock_inicial - total_stock_final) - total_entregado) > 1:
+    if total_entregado > total_stock_inicial + tolerancia:
+        return False, f"Total entregado (${total_entregado:,.0f}) excede stock inicial (${total_stock_inicial:,.0f}) por ${total_entregado - total_stock_inicial:,.0f}"
+    
+    if abs((total_stock_inicial - total_stock_final) - total_entregado) > tolerancia:
         return False, f"Diferencia de stock (${total_stock_inicial - total_stock_final:,.0f}) no coincide con entregado (${total_entregado:,.0f})"
+    
+    # Verificar que todas las dependencias tengan al menos algo
+    for ofi in reparto:
+        if ofi["total"] <= 0 and ofi["cuota_objetivo"] > 0:
+            return False, f"La dependencia {ofi['nombre']} no recibió vales"
     
     return True, "Distribución válida"
 
@@ -677,7 +741,8 @@ def descargar_reporte_csv(reparto, fecha):
                 fila = {
                     "Dependencia": ofi.get("nombre", ""),
                     "Cuota_Objetivo": ofi.get("cuota_objetivo", 0),
-                    "Total_Entregado": ofi.get("total", 0)
+                    "Total_Entregado": ofi.get("total", 0),
+                    "Porcentaje_Cumplido": ofi.get("porcentaje_cumplido", 0)
                 }
                 for i, denom in enumerate(DENOMINACIONES):
                     if "vales" in ofi and len(ofi["vales"]) > i:
@@ -1049,18 +1114,28 @@ else:
                     
                     mostrar_graficos(reparto)
                     
-                    # Mostrar tabla con detalles
+                    # Mostrar tabla con detalles y porcentajes
                     datos_tabla = []
                     for ofi in reparto:
                         cuota = ofi['cuota_objetivo']
                         total = ofi['total']
                         diferencia = cuota - total
+                        porcentaje = ofi.get('porcentaje_cumplido', 0)
+                        
+                        # Color según el porcentaje
+                        if porcentaje >= 100:
+                            color = "🟢"  # Verde
+                        elif porcentaje >= 80:
+                            color = "🟡"  # Amarillo
+                        else:
+                            color = "🔴"  # Rojo
                         
                         datos_tabla.append({
                             "Dependencia": ofi["nombre"],
                             "Cuota": f"${cuota:,.0f}",
                             "Entregado": f"${total:,.0f}",
                             "Diferencia": f"${diferencia:,.0f}",
+                            "% Cumplido": f"{porcentaje:.1f}% {color}",
                             "$20k": ofi["vales"][0],
                             "$10k": ofi["vales"][1],
                             "$3k": ofi["vales"][2],
@@ -1069,7 +1144,30 @@ else:
                             "$500": ofi["vales"][5],
                             "$100": ofi["vales"][6]
                         })
-                    st.dataframe(pd.DataFrame(datos_tabla), use_container_width=True)
+                    st.dataframe(
+                        pd.DataFrame(datos_tabla), 
+                        use_container_width=True,
+                        column_config={
+                            "% Cumplido": st.column_config.TextColumn(
+                                "% Cumplido",
+                                help="Porcentaje de la cuota cumplido"
+                            )
+                        }
+                    )
+                    
+                    # Mostrar estadísticas de cumplimiento
+                    st.subheader("📊 Estadísticas de Cumplimiento")
+                    cumplidos = sum(1 for ofi in reparto if ofi["total"] >= ofi["cuota_objetivo"])
+                    total_deps = len(reparto)
+                    porcentaje_cumplidos = (cumplidos / total_deps * 100) if total_deps > 0 else 0
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("✅ Dependencias cumplidas", f"{cumplidos}/{total_deps}")
+                    with col2:
+                        st.metric("📊 Porcentaje de cumplimiento", f"{porcentaje_cumplidos:.1f}%")
+                    with col3:
+                        st.metric("💰 Total entregado", f"${sum(ofi['total'] for ofi in reparto):,.0f}")
                     
                     descargar_reporte_csv(reparto, fecha_dist.strftime("%Y-%m-%d"))
                     
